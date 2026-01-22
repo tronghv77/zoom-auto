@@ -22,7 +22,7 @@ AllowNoIcons=yes
 LicenseFile=
 OutputDir=dist
 OutputBaseFilename=ZoomAuto-Setup-{#MyAppVersion}
-Compression=lz4
+Compression=zip
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
@@ -30,7 +30,6 @@ ChangesAssociations=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "vietnamese"; MessagesFile: "compiler:Vietnamese.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
