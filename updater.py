@@ -18,8 +18,13 @@ def _resource_dir() -> Path:
 
 
 def _app_dir() -> Path:
+    """Get application data directory (AppData for production, exe dir for frozen, script dir for dev)."""
     if getattr(sys, "frozen", False):
-        return Path(os.path.dirname(sys.executable))
+        # Running as exe - use AppData
+        app_data = Path.home() / "AppData" / "Local" / "ZoomAuto"
+        app_data.mkdir(parents=True, exist_ok=True)
+        return app_data
+    # Running as script - use script directory
     return Path(__file__).parent
 
 
