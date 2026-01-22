@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTimeEdit, QSpinBox, QMessageBox, QDialog, QFormLayout, QCheckBox,
     QHeaderView, QDateTimeEdit, QRadioButton, QButtonGroup, QDateEdit,
     QComboBox, QDialogButtonBox, QSpinBox, QCheckBox, QGroupBox, QScrollArea,
-    QTabWidget, QTextBrowser
+    QTabWidget, QTextBrowser, QSystemTrayIcon, QMenu
 )
 from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal, QDateTime, QDate
 
@@ -389,7 +389,7 @@ class CustomRecurrenceDialog(QDialog):
         else:
             self.radio_never.setChecked(True)
 
-from PyQt6.QtGui import QIcon, QColor
+from PyQt6.QtGui import QIcon, QColor, QAction
 from apscheduler.schedulers.background import BackgroundScheduler
 import webbrowser
 import subprocess
@@ -568,6 +568,12 @@ class SchedulerManager:
         webbrowser.open(url)
         if self.callback:
             self.callback(f"✓ Đã mở Zoom: {meeting_id if meeting_id else 'Link'}")
+        if self.parent_window:
+            try:
+                name = meeting_id if meeting_id else (zoom_link if zoom_link else "Zoom")
+                self.parent_window.show_tray_notification("Đã mở Zoom", name)
+            except Exception:
+                pass
     
     def _cleanup_thread(self, thread):
         """Dọn dẹp thread đã xong"""
@@ -629,6 +635,22 @@ class SchedulerManager:
     def get_all_jobs(self):
         """Lấy tất cả lịch"""
         return self.jobs
+
+    def get_next_run_info(self):
+        """Trả về (job_id, thời_gian_chạy_kế_tiếp) nếu có."""
+        try:
+            jobs = self.scheduler.get_jobs()
+            next_job = None
+            for job in jobs:
+                if job.id.startswith("remind_"):
+                    continue
+                if not job.next_run_time:
+                    continue
+                if not next_job or job.next_run_time < next_job[1]:
+                    next_job = (job.id, job.next_run_time)
+            return next_job
+        except Exception:
+            return None
     
     def stop(self):
         """Dừng scheduler"""
@@ -1838,11 +1860,15 @@ class ZoomAutoApp(QMainWindow):
         self.setWindowIcon(QIcon(str(Path(__file__).parent / "app.ico")))
         # Khởi tạo scheduler (trước khi UI để tránh lỗi callback)
         self.scheduler = SchedulerManager(callback=self.show_message, parent_window=self)
+        self.tray_icon = None
+        self.exit_requested = False
         # Tạo UI trước
         self.init_ui()
         # Tải lịch SAU khi UI sẵn sàng
         self.load_schedules()
         self.refresh_table()
+        self.init_tray()
+        self.update_tray_tooltip()
     
     def init_ui(self):
         """Khởi tạo giao diện"""
@@ -2150,6 +2176,108 @@ class ZoomAutoApp(QMainWindow):
             updater.maybe_check_on_startup(self)
         except Exception as _e:
             pass
+
+    def init_tray(self):
+        """Khởi tạo icon khay + menu nhanh."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        icon = QIcon(str(Path(__file__).parent / "app.ico"))
+        self.tray_icon = QSystemTrayIcon(icon, self)
+
+        tray_menu = QMenu(self)
+
+        show_action = QAction("Mở cửa sổ", self)
+        show_action.triggered.connect(self.restore_from_tray)
+        tray_menu.addAction(show_action)
+
+        update_action = QAction("Kiểm tra cập nhật…", self)
+        update_action.triggered.connect(self.check_updates)
+        tray_menu.addAction(update_action)
+
+        exit_action = QAction("Thoát", self)
+        exit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.setToolTip(self.build_tray_tooltip())
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
+        self.show_tray_notification("Zoom Auto Scheduler", "Đang chạy nền và sẵn sàng mở Zoom.")
+
+    def on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.restore_from_tray()
+
+    def restore_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def build_tray_tooltip(self):
+        jobs = self.scheduler.get_all_jobs()
+        enabled = sum(1 for v in jobs.values() if v.get('enabled'))
+        total = len(jobs)
+
+        next_info = self.scheduler.get_next_run_info()
+        next_text = "Chưa có lịch" if not next_info else ""
+        if next_info:
+            job_id, dt = next_info
+            job_data = jobs.get(job_id, {})
+            name = job_data.get('name') or job_data.get('meeting_id') or "Zoom"
+            try:
+                local_dt = dt.astimezone() if dt.tzinfo else dt
+                next_text = f"Lịch gần nhất: {name} @ {local_dt.strftime('%d/%m %H:%M')}"
+            except Exception:
+                next_text = f"Lịch gần nhất: {name}"
+
+        return f"Zoom Auto Scheduler\nĐang bật: {enabled}/{total}\n{next_text}"
+
+    def update_tray_tooltip(self):
+        if self.tray_icon:
+            self.tray_icon.setToolTip(self.build_tray_tooltip())
+
+    def show_tray_notification(self, title, message, icon=QSystemTrayIcon.MessageIcon.Information, msecs=5000):
+        if self.tray_icon and self.tray_icon.supportsMessages():
+            self.tray_icon.showMessage(title, message, icon, msecs)
+
+    def quit_app(self):
+        """Đóng hẳn ứng dụng (qua menu khay)."""
+        self.exit_requested = True
+        self.close()
+
+    def prompt_close_action(self):
+        """Hiện hộp thoại khi nhấn X để chọn Ẩn xuống khay hoặc Đóng."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return "exit"
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Đóng cửa sổ Zoom Auto")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText("""
+    <div style='font-size:13px;'><b>Bạn muốn làm gì?</b></div>
+    <div style='color:#475569; margin-top:6px;'>Ẩn xuống khay để tiếp tục chạy nền, hoặc đóng hẳn để dừng toàn bộ lịch.</div>
+    """)
+        msg.setInformativeText("Ẩn xuống khay: Lịch vẫn chạy.  |  Đóng ứng dụng: Dừng mọi lịch đã hẹn.")
+        msg.setStyleSheet("""
+            QMessageBox { background: #f8fafc; }
+            QLabel { color: #0f172a; } 
+            QPushButton { padding: 8px 14px; font-weight: 600; }
+        """)
+
+        hide_btn = msg.addButton("Ẩn xuống khay (khuyến nghị)", QMessageBox.ButtonRole.AcceptRole)
+        exit_btn = msg.addButton("Đóng ứng dụng (dừng lịch)", QMessageBox.ButtonRole.DestructiveRole)
+
+        msg.setDefaultButton(hide_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == hide_btn:
+            return "hide"
+        if clicked == exit_btn:
+            return "exit"
+        return None
 
     def handle_double_click(self, item):
         """Xử lý double-click để chỉnh sửa"""
@@ -2523,6 +2651,7 @@ class ZoomAutoApp(QMainWindow):
             self.table.setItem(idx, 4, QTableWidgetItem(job_data.get('zoom_link', '')))
         
         self.table.resizeRowsToContents()
+        self.update_tray_tooltip()
 
     def on_toggle_schedule(self, job_id, is_enabled, row):
         """Xử lý khi công tắc bật/tắt được gạt"""
@@ -2532,6 +2661,7 @@ class ZoomAutoApp(QMainWindow):
             # Không cần refresh toàn bộ bảng, chỉ cần cập nhật trạng thái
             status = "bật" if is_enabled else "tắt"
             self.show_message(f"✓ Đã {status} lịch")
+            self.update_tray_tooltip()
     
     def save_schedules(self):
         """Lưu lịch vào file JSON"""
@@ -2577,7 +2707,19 @@ class ZoomAutoApp(QMainWindow):
         self.status_label.setText(message)
         
     def closeEvent(self, event):
-        """Xử lý khi đóng ứng dụng"""
+        """Đóng cửa sổ: hỏi người dùng Ẩn xuống khay hoặc Đóng hẳn."""
+        if not self.exit_requested:
+            choice = self.prompt_close_action()
+            if choice == "hide":
+                event.ignore()
+                self.hide()
+                self.show_message("Ứng dụng đang chạy ngầm ở khay hệ thống")
+                self.show_tray_notification("Zoom Auto Scheduler", "Ứng dụng đang chạy nền tại khay.")
+                return
+            if choice != "exit":
+                event.ignore()
+                return
+
         self.scheduler.stop()
         super().closeEvent(event)
     
