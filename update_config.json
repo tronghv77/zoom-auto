@@ -1,0 +1,8 @@
+{
+  "provider": "github",
+  "repo": "tronghv77/zoom-auto", 
+  "asset_regex": "^ZoomAuto.*\\.exe$",
+  "require_sha256": true,
+  "check_on_startup": true,
+  "check_interval_hours": 24
+}
