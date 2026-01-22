@@ -2720,6 +2720,8 @@ class ZoomAutoApp(QMainWindow):
                 event.ignore()
                 return
 
+        # Lưu lịch trước khi đóng
+        self.save_schedules()
         self.scheduler.stop()
         super().closeEvent(event)
     
