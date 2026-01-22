@@ -398,14 +398,8 @@ from version import __version__ as APP_VERSION
 import updater
 
 # Đường dẫn lưu trữ dữ liệu (AppData hoặc cùng EXE)
-# Ưu tiên: %AppData%\ZoomAuto (Windows best practice)
-# Fallback: Cùng thư mục chứa EXE nếu AppData không khả dụng
-if getattr(sys, 'frozen', False):
-    # Running as compiled exe
-    BASE_DIR = Path(sys.executable).parent
-else:
-    # Running as script - lưu vào AppData
-    BASE_DIR = Path.home() / "AppData" / "Local" / "ZoomAuto"
+# Luôn lưu data vào AppData (Windows best practice)
+BASE_DIR = Path.home() / "AppData" / "Local" / "ZoomAuto"
 
 # Tạo thư mục nếu không tồn tại
 BASE_DIR.mkdir(parents=True, exist_ok=True)
