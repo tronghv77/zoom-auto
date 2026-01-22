@@ -2170,7 +2170,6 @@ class ZoomAutoApp(QMainWindow):
         self.table.itemSelectionChanged.connect(self.on_selection_changed)
         self.table.itemDoubleClicked.connect(self.handle_double_click)
         
-        self.refresh_table()
         # Kiểm tra cập nhật nền (không chặn UI)
         try:
             updater.maybe_check_on_startup(self)
