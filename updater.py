@@ -75,6 +75,8 @@ def _github_latest_release(repo: str) -> Dict:
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     headers = {"Accept": "application/vnd.github+json"}
     resp = requests.get(url, headers=headers, timeout=20)
+    if resp.status_code == 404:
+        return None
     resp.raise_for_status()
     return resp.json()
 
@@ -116,6 +118,8 @@ def check_latest(config: Dict) -> Optional[Dict]:
     if not repo or repo == "owner/repo":
         return None
     rel = _github_latest_release(repo)
+    if not rel:
+        return None
     tag = rel.get("tag_name") or ""
     latest_version = _normalize_version(tag)
     asset_regex = config.get("asset_regex", r"^ZoomAuto.*\\.exe$")
