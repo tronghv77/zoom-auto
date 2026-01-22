@@ -398,7 +398,15 @@ from version import __version__ as APP_VERSION
 import updater
 
 # Đường dẫn lưu trữ lịch
-SCHEDULE_FILE = Path(__file__).parent / "zoom_schedule.json"
+# Khi chạy từ EXE (PyInstaller), sử dụng thư mục chứa EXE
+if getattr(sys, 'frozen', False):
+    # Running as compiled exe
+    BASE_DIR = Path(sys.executable).parent
+else:
+    # Running as script
+    BASE_DIR = Path(__file__).parent
+
+SCHEDULE_FILE = BASE_DIR / "zoom_schedule.json"
 
 class ZoomOpener(QThread):
     """Thread để mở Zoom"""
