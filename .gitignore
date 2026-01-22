@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyz
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Logs & misc
+*.log
+.DS_Store
+Thumbs.db
+
+# App data
+zoom_schedule.json
+update_config.json
