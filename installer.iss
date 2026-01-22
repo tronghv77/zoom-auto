@@ -37,7 +37,7 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 Name: "startupmenu"; Description: "Chạy tự động khi khởi động máy"; GroupDescription: "Khởi động"; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\ZoomAuto\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
