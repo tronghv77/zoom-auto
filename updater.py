@@ -332,7 +332,7 @@ def maybe_check_on_startup(parent) -> None:
             if is_newer(info["version"], get_current_version()):
                 # soft prompt
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.information(parent, "Cập nhật", f"Có bản mới v{info['version']}. Vào Trợ giúp → Kiểm tra cập nhật để cập nhật.")
+                QMessageBox.information(parent, "Cập nhật", f"Có bản mới v{info['version']}. Vào Menu → Kiểm tra cập nhật để cập nhật.")
         except Exception:
             pass
 

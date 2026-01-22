@@ -19,15 +19,19 @@ WEEKDAYS_MAP = {
 }
 
 def format_meeting_id(id_str):
-    """Định dạng Meeting ID từ '83738062598' thành '837 3806 2598'."""
+    """Định dạng Meeting ID: 10 số (723 543 0618) hoặc 11 số (873 9908 0624)."""
     if not id_str or not id_str.isdigit():
         return id_str
     
-    # Định dạng cho ID 11 số theo chuẩn mới
+    # Định dạng cho ID 11 số: 3-4-4 (ví dụ: 873 9908 0624)
     if len(id_str) == 11:
         return f"{id_str[0:3]} {id_str[3:7]} {id_str[7:11]}"
     
-    # Trả về nguyên bản nếu không phải 11 số (có thể là ID cũ hơn)
+    # Định dạng cho ID 10 số: 3-3-4 (ví dụ: 723 543 0618)
+    if len(id_str) == 10:
+        return f"{id_str[0:3]} {id_str[3:6]} {id_str[6:10]}"
+    
+    # Trả về nguyên bản nếu không phải 10 hoặc 11 số
     return id_str
 
 class CustomRecurrenceDialog(QDialog):
@@ -85,7 +89,47 @@ class CustomRecurrenceDialog(QDialog):
                 background: white;
             }
             
-            QSpinBox { min-width: 70px; }
+            QSpinBox { 
+                min-width: 70px;
+            }
+            
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 20px;
+                height: 16px;
+                border: none;
+                background-color: #06b6d4;
+            }
+            
+            QSpinBox::up-button {
+                border-top-right-radius: 6px;
+            }
+            
+            QSpinBox::down-button {
+                border-bottom-right-radius: 6px;
+            }
+            
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #0891b2;
+            }
+            
+            QSpinBox::up-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-bottom: 5px solid white;
+                width: 0;
+                height: 0;
+            }
+            
+            QSpinBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid white;
+                width: 0;
+                height: 0;
+            }
+            
             QComboBox { min-width: 100px; }
             
             QComboBox::drop-down {
@@ -177,6 +221,59 @@ class CustomRecurrenceDialog(QDialog):
                 background-color: #f0f9ff;
                 border: 2px solid #0891b2;
                 color: #0891b2;
+            }
+            
+            QCalendarWidget {
+                background-color: white;
+            }
+            QCalendarWidget QWidget {
+                background-color: white;
+                alternate-background-color: #f0f9ff;
+            }
+            QCalendarWidget QToolButton {
+                background-color: #06b6d4;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+                icon-size: 16px;
+                font-weight: bold;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #0891b2;
+            }
+            QCalendarWidget QToolButton::menu-indicator {
+                image: none;
+            }
+            QCalendarWidget QMenu {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+            }
+            QCalendarWidget QSpinBox {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 4px;
+                font-size: 13px;
+                color: #0f172a;
+            }
+            QCalendarWidget QAbstractItemView {
+                background-color: white;
+                color: #0f172a;
+                selection-background-color: #06b6d4;
+                selection-color: white;
+                border: none;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                color: #0f172a;
+                background-color: white;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f0f9ff;
+                color: #0f172a;
+                font-weight: bold;
+                border: none;
+                padding: 5px;
             }
         """)
         
@@ -294,6 +391,63 @@ class CustomRecurrenceDialog(QDialog):
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setEnabled(False)
         self.end_date_edit.setMinimumWidth(160)
+        
+        # Apply calendar styling
+        self.end_date_edit.calendarWidget().setStyleSheet("""
+            QCalendarWidget {
+                background-color: white;
+            }
+            QCalendarWidget QWidget {
+                background-color: white;
+                alternate-background-color: #f0f9ff;
+            }
+            QCalendarWidget QToolButton {
+                background-color: #06b6d4;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+                icon-size: 16px;
+                font-weight: bold;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #0891b2;
+            }
+            QCalendarWidget QToolButton::menu-indicator {
+                image: none;
+            }
+            QCalendarWidget QMenu {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+            }
+            QCalendarWidget QSpinBox {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 4px;
+                font-size: 13px;
+                color: #0f172a;
+            }
+            QCalendarWidget QAbstractItemView {
+                background-color: white;
+                color: #0f172a;
+                selection-background-color: #06b6d4;
+                selection-color: white;
+                border: none;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                color: #0f172a;
+                background-color: white;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f0f9ff;
+                color: #0f172a;
+                font-weight: bold;
+                border: none;
+                padding: 5px;
+            }
+        """)
+        
         date_layout.addWidget(self.end_date_edit)
         date_layout.addStretch()
         
@@ -641,6 +795,41 @@ class SchedulerManager:
     def get_all_jobs(self):
         """Lấy tất cả lịch"""
         return self.jobs
+    
+    def check_duplicate_schedule(self, hour, minute, meeting_id, zoom_link, exclude_job_id=None):
+        """
+        Kiểm tra xem có lịch nào trùng meeting_id hoặc zoom_link tại cùng thời điểm không.
+        
+        Args:
+            hour: Giờ cần kiểm tra
+            minute: Phút cần kiểm tra
+            meeting_id: Meeting ID cần kiểm tra
+            zoom_link: Link Zoom cần kiểm tra
+            exclude_job_id: Job ID cần loại trừ (dùng khi edit)
+        
+        Returns:
+            (True, job_info) nếu trùng, (False, None) nếu không trùng
+        """
+        for job_id, job_data in self.jobs.items():
+            # Bỏ qua job đang được edit
+            if exclude_job_id and job_id == exclude_job_id:
+                continue
+            
+            # Bỏ qua job bị tắt
+            if not job_data.get('enabled', True):
+                continue
+            
+            # Kiểm tra trùng thời gian
+            if job_data['hour'] == hour and job_data['minute'] == minute:
+                # Kiểm tra trùng Meeting ID (nếu có)
+                if meeting_id and job_data.get('meeting_id') == meeting_id:
+                    return (True, job_data)
+                
+                # Kiểm tra trùng Link Zoom (nếu có)
+                if zoom_link and job_data.get('zoom_link') == zoom_link:
+                    return (True, job_data)
+        
+        return (False, None)
 
     def get_next_run_info(self):
         """Trả về (job_id, thời_gian_chạy_kế_tiếp) nếu có."""
@@ -1562,6 +1751,42 @@ class ScheduleDialog(QDialog):
                 border: 2px solid #0284c7;
                 color: #0284c7;
             }
+            
+            QToolTip {
+                background-color: #1e293b;
+                color: white;
+                border: 1px solid #0ea5e9;
+                border-radius: 4px;
+                padding: 6px 10px;
+                font-size: 12px;
+            }
+            
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 4px;
+                color: #0f172a;
+            }
+            
+            QMenu::item {
+                padding: 8px 24px;
+                color: #0f172a;
+                font-size: 13px;
+                background-color: transparent;
+            }
+            
+            QMenu::item:selected {
+                background-color: #0ea5e9;
+                color: white;
+                border-radius: 4px;
+            }
+            
+            QMenu::separator {
+                height: 1px;
+                background-color: #e2e8f0;
+                margin: 4px 8px;
+            }
         """)
         
         main_layout = QVBoxLayout()
@@ -1615,8 +1840,8 @@ class ScheduleDialog(QDialog):
 
         # Meeting ID
         self.meeting_id_input = QLineEdit()
-        self.meeting_id_input.setToolTip("Nhập Meeting ID (11 chữ số)")
-        self.meeting_id_input.setInputMask("000 0000 0000;_")
+        self.meeting_id_input.setToolTip("Nhập Meeting ID (chỉ số, không giới hạn ký tự)")
+        self.meeting_id_input.setPlaceholderText("Ví dụ: 723 543 0618 hoặc 873 9908 0624")
         layout.addRow("Meeting ID:", self.meeting_id_input)
         
         # Meeting Password
@@ -1628,14 +1853,18 @@ class ScheduleDialog(QDialog):
         # Chọn giờ (Combo boxes)
         time_layout = QHBoxLayout()
         
+        # Tính thời gian mặc định = hiện tại + 1 giờ
+        current_time = QTime.currentTime()
+        default_time = current_time.addSecs(3600)  # +1 giờ (3600 giây)
+        
         self.hour_combo = QComboBox()
         self.hour_combo.addItems([f"{i:02d}" for i in range(24)])
-        self.hour_combo.setCurrentText("08")
+        self.hour_combo.setCurrentText(f"{default_time.hour():02d}")
         self.hour_combo.setMaxVisibleItems(10)
         
         self.minute_combo = QComboBox()
         self.minute_combo.addItems([f"{i:02d}" for i in range(60)])
-        self.minute_combo.setCurrentText("00")
+        self.minute_combo.setCurrentText(f"{default_time.minute():02d}")
         self.minute_combo.setMaxVisibleItems(10)
         
         time_layout.addWidget(self.hour_combo)
@@ -1669,25 +1898,57 @@ class ScheduleDialog(QDialog):
         
         # Calendar styling
         self.date_edit.calendarWidget().setStyleSheet("""
+            QCalendarWidget {
+                background-color: white;
+            }
+            QCalendarWidget QWidget {
+                background-color: white;
+                alternate-background-color: #f0f9ff;
+            }
             QCalendarWidget QToolButton {
-                color: black;
-                icon-size: 20px;
+                background-color: #0ea5e9;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+                icon-size: 16px;
+                font-weight: bold;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #0284c7;
+            }
+            QCalendarWidget QToolButton::menu-indicator {
+                image: none;
             }
             QCalendarWidget QMenu {
-                width: 150px;
-                left: 20px;
-                color: white;
+                background-color: white;
+                border: 1px solid #cbd5e1;
             }
-            QCalendarWidget QSpinBox { 
-                width: 50px; 
-                font-size: 14px; 
-                color: black; 
+            QCalendarWidget QSpinBox {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                padding: 4px;
+                font-size: 13px;
+                color: #0f172a;
             }
-            QCalendarWidget QWidget { alternate-background-color: #f0f0f0; }
-            QCalendarWidget QAbstractItemView:enabled {
-                color: black;
+            QCalendarWidget QAbstractItemView {
+                background-color: white;
+                color: #0f172a;
                 selection-background-color: #0ea5e9;
                 selection-color: white;
+                border: none;
+            }
+            QCalendarWidget QAbstractItemView:enabled {
+                color: #0f172a;
+                background-color: white;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: #f0f9ff;
+                color: #0f172a;
+                font-weight: bold;
+                border: none;
+                padding: 5px;
             }
         """)
         
@@ -1731,16 +1992,21 @@ class ScheduleDialog(QDialog):
 
     def accept(self):
         """Xác thực dữ liệu trước khi đóng"""
+        # Tự động trim khoảng trắng trong Meeting ID
+        meeting_id_text = self.meeting_id_input.text().strip()
+        self.meeting_id_input.setText(meeting_id_text)
+        
         # Xóa khoảng trắng để lấy chuỗi số thực
-        meeting_id_digits = self.meeting_id_input.text().replace(" ", "")
+        meeting_id_digits = meeting_id_text.replace(" ", "")
 
         # Chỉ kiểm tra nếu người dùng đã bắt đầu nhập ID
         if meeting_id_digits:
-            # hasAcceptableInput() kiểm tra xem mask đã được điền đầy đủ chưa
-            if not self.meeting_id_input.hasAcceptableInput():
-                QMessageBox.warning(self, "Lỗi Meeting ID", "Meeting ID phải có đủ 11 chữ số.")
+            # Kiểm tra chỉ chứa số
+            if not meeting_id_digits.isdigit():
+                QMessageBox.warning(self, "Lỗi Meeting ID", "Meeting ID chỉ được chứa các chữ số.")
                 return # Ngăn không cho đóng dialog
             
+            # Kiểm tra không bắt đầu bằng 0 hoặc 1
             if meeting_id_digits.startswith('0') or meeting_id_digits.startswith('1'):
                 QMessageBox.warning(self, "Lỗi Meeting ID", "Meeting ID không được bắt đầu bằng số 0 hoặc 1.")
                 return # Ngăn không cho đóng dialog
@@ -2071,29 +2337,37 @@ class ZoomAutoApp(QMainWindow):
             }
             
             QMenu {
-                background-color: white;
+                background-color: #ffffff;
                 border: 1px solid #cbd5e1;
                 border-radius: 6px;
                 padding: 4px;
+                color: #0f172a;
             }
             
             QMenu::item {
                 padding: 8px 24px;
-                color: #475569;
+                color: #0f172a;
                 font-size: 13px;
+                background-color: transparent;
             }
             
             QMenu::item:selected {
-                background-color: #dbeafe;
-                color: #0369a1;
+                background-color: #0ea5e9;
+                color: white;
                 border-radius: 4px;
+            }
+            
+            QMenu::separator {
+                height: 1px;
+                background-color: #e2e8f0;
+                margin: 4px 8px;
             }
         """
         self.setStyleSheet(APP_STYLE)
         
         # Create Menu Bar
         menu_bar = self.menuBar()
-        help_menu = menu_bar.addMenu("Trợ giúp")
+        help_menu = menu_bar.addMenu("Menu")
 
         about_action = help_menu.addAction("Giới thiệu")
         about_action.triggered.connect(self.show_about)
@@ -2139,7 +2413,7 @@ class ZoomAutoApp(QMainWindow):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Bật/Tắt", "Giờ", "Tên phòng Zoom", "Meeting ID", "Link Zoom"])
+        self.table.setHorizontalHeaderLabels(["Bật/Tắt", "THỜI GIAN", "Tên phòng Zoom", "Meeting ID", "Link Zoom"])
         
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -2300,6 +2574,26 @@ class ZoomAutoApp(QMainWindow):
 
             if not data['meeting_id'] and not data['zoom_link']:
                 QMessageBox.warning(self, "Lỗi", "Vui lòng nhập Meeting ID HOẶC Link Zoom!")
+                return
+            
+            # Kiểm tra trùng lặp
+            is_duplicate, duplicate_job = self.scheduler.check_duplicate_schedule(
+                data['hour'], 
+                data['minute'], 
+                data['meeting_id'], 
+                data['zoom_link']
+            )
+            
+            if is_duplicate:
+                duplicate_name = duplicate_job.get('name', 'Không có tên')
+                duplicate_time = f"{duplicate_job['hour']:02d}:{duplicate_job['minute']:02d}"
+                
+                QMessageBox.warning(
+                    self, 
+                    "Lịch trùng lặp", 
+                    f"Đã có lịch '{duplicate_name}' mở cùng phòng Zoom này vào lúc {duplicate_time}.\n\n"
+                    f"Không thể tạo 2 lịch cùng mở một phòng Zoom tại cùng thời điểm."
+                )
                 return
             
             # Thêm vào scheduler
@@ -2532,6 +2826,28 @@ class ZoomAutoApp(QMainWindow):
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_data = dialog.get_data()
+            
+            # Kiểm tra trùng lặp (loại trừ job hiện tại)
+            is_duplicate, duplicate_job = self.scheduler.check_duplicate_schedule(
+                new_data['hour'], 
+                new_data['minute'], 
+                new_data['meeting_id'], 
+                new_data['zoom_link'],
+                exclude_job_id=job_id
+            )
+            
+            if is_duplicate:
+                duplicate_name = duplicate_job.get('name', 'Không có tên')
+                duplicate_time = f"{duplicate_job['hour']:02d}:{duplicate_job['minute']:02d}"
+                
+                QMessageBox.warning(
+                    self, 
+                    "Lịch trùng lặp", 
+                    f"Đã có lịch '{duplicate_name}' mở cùng phòng Zoom này vào lúc {duplicate_time}.\n\n"
+                    f"Không thể tạo 2 lịch cùng mở một phòng Zoom tại cùng thời điểm."
+                )
+                return
+            
             self.scheduler.add_schedule(
                 job_id,
                 new_data['hour'], new_data['minute'],

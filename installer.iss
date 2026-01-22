@@ -1,8 +1,8 @@
 ; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 0.1.2
+; Generated for version 0.1.3
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "0.1.2"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
@@ -32,9 +32,9 @@ ChangesAssociations=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 0,6.1
-Name: "startupmenu"; Description: "Chạy tự động khi khởi động máy"; GroupDescription: "Khởi động"; Flags: unchecked
+Name: "startupmenu"; Description: "Chạy tự động khi khởi động máy"; GroupDescription: "Khởi động"
 
 [Files]
 Source: "{#SourceDir}\ZoomAuto\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
