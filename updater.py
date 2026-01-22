@@ -229,7 +229,7 @@ def check_and_update_ui(parent) -> None:
 
     latest = info["version"]
     if not is_newer(latest, current):
-        QMessageBox.information(parent, "Cập nhật", f"Bạn đang ở phiên bản mới nhất ({current}).")
+        QMessageBox.information(parent, "Cập nhật", "Bạn đã cập nhật phiên bản mới nhất.")
         return
 
     notes = info.get("notes", "")
