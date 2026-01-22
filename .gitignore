@@ -14,6 +14,8 @@ env/
 build/
 dist/
 *.spec
+!ZoomAuto.spec
+.update_last_check
 
 # Logs & misc
 *.log
