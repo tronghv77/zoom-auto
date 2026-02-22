@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QTimeEdit, QSpinBox, QMessageBox, QDialog, QFormLayout, QCheckBox,
     QHeaderView, QDateTimeEdit, QRadioButton, QButtonGroup, QDateEdit,
     QComboBox, QDialogButtonBox, QSpinBox, QCheckBox, QGroupBox, QScrollArea,
-    QTabWidget, QTextBrowser, QSystemTrayIcon, QMenu
+    QTabWidget, QTextBrowser, QSystemTrayIcon, QMenu, QSizePolicy
 )
-from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal, QDateTime, QDate
+from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal, QDateTime, QDate, QTimer
 
 # Mapping thứ trong tuần
 WEEKDAYS_MAP = {
@@ -559,6 +559,7 @@ BASE_DIR = Path.home() / "AppData" / "Local" / "ZoomAuto"
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 SCHEDULE_FILE = BASE_DIR / "zoom_schedule.json"
+SETTINGS_FILE = BASE_DIR / "settings.json"
 
 class ZoomOpener(QThread):
     """Thread để mở Zoom"""
@@ -649,7 +650,11 @@ class SchedulerManager:
                     if run_date_iso:
                          trigger_args = {'run_date': datetime.fromisoformat(run_date_iso)}
                     else:
-                         return # Invalid once config
+                         # Invalid once config — xóa job cũ nếu có rồi return
+                         try:
+                             self.scheduler.remove_job(job_id)
+                         except: pass
+                         return job_id
                          
                 elif rec_type == 'daily':
                     pass # cron hour/min default
@@ -713,21 +718,56 @@ class SchedulerManager:
         """Mở Zoom"""
         print(f"[LOG] Scheduler trigger: Mở Zoom lúc {datetime.now().strftime('%H:%M:%S')}")
         
-        # Ưu tiên Link nếu có
-        if zoom_link:
-             url = zoom_link
-             print(f"[LOG] Opening Zoom Link: {url}")
-        else:
-            # Tạo URL HTTPS từ ID/Pass
-            if password:
-                url = f"https://us06web.zoom.us/j/{meeting_id}?pwd={password}"
+        # Lấy chế độ mở từ settings
+        open_mode = "browser"  # Mặc định
+        if self.parent_window:
+            try:
+                open_mode = self.parent_window.open_mode
+            except AttributeError:
+                pass
+        
+        if open_mode == "app":
+            # === Mở bằng ứng dụng Zoom Desktop ===
+            if zoom_link:
+                # Phân tích link Zoom để lấy meeting ID và password
+                import re
+                match = re.search(r'/j/(\d+)', zoom_link)
+                link_id = match.group(1) if match else meeting_id
+                pwd_match = re.search(r'[?&]pwd=([^&]+)', zoom_link)
+                link_pwd = pwd_match.group(1) if pwd_match else password
+                
+                url = f"zoommtg://zoom.us/join?confno={link_id}"
+                if link_pwd:
+                    url += f"&pwd={link_pwd}"
+                print(f"[LOG] Opening Zoom App (from link): {url}")
             else:
-                url = f"https://us06web.zoom.us/j/{meeting_id}"
-            print(f"[LOG] Opening HTTPS URL: {url}")
+                url = f"zoommtg://zoom.us/join?confno={meeting_id}"
+                if password:
+                    url += f"&pwd={password}"
+                print(f"[LOG] Opening Zoom App: {url}")
             
-        webbrowser.open(url)
+            # Dùng os.startfile trên Windows để mở protocol URL
+            try:
+                os.startfile(url)
+            except Exception:
+                webbrowser.open(url)  # Fallback
+        else:
+            # === Mở bằng trình duyệt ===
+            if zoom_link:
+                url = zoom_link
+                print(f"[LOG] Opening Zoom Link (browser): {url}")
+            else:
+                if password:
+                    url = f"https://us06web.zoom.us/j/{meeting_id}?pwd={password}"
+                else:
+                    url = f"https://us06web.zoom.us/j/{meeting_id}"
+                print(f"[LOG] Opening HTTPS URL (browser): {url}")
+            
+            webbrowser.open(url)
+        
+        mode_label = "💻 App" if open_mode == "app" else "🌐 Trình duyệt"
         if self.callback:
-            self.callback(f"✓ Đã mở Zoom: {meeting_id if meeting_id else 'Link'}")
+            self.callback(f"✓ Đã mở Zoom ({mode_label}): {meeting_id if meeting_id else 'Link'}")
         if self.parent_window:
             try:
                 name = meeting_id if meeting_id else (zoom_link if zoom_link else "Zoom")
@@ -1101,35 +1141,40 @@ class HelpDialog(QDialog):
         <div class="step">
             <div class="step-title">Bước 1: Thêm lịch mới</div>
             <ul>
-                <li>Nhấn nút <span class="highlight">➕ Thêm lịch</span> ở góc trên bên phải</li>
+                <li>Nhấn nút <span class="highlight">➕ Thêm lịch</span> ở góc dưới bên trái</li>
                 <li>Nhập <b>Tên phòng Zoom</b> (ví dụ: "Họp team buổi sáng")</li>
                 <li>Dán <b>Link Zoom</b> vào ô tương ứng (cách khuyên dùng) <b>HOẶC</b> nhập Meeting ID + Mật khẩu</li>
                 <li>Chọn <b>Giờ</b> muốn tự động vào phòng</li>
-                <li>Chọn <b>Lặp lại</b>: Không lặp, Hàng ngày, Hàng tuần, hoặc Tùy chỉnh</li>
+                <li>Chọn <b>Lặp lại</b>: Không lặp, Hàng ngày, Hàng tuần, T2-T6, hoặc Tùy chỉnh</li>
             </ul>
         </div>
         
         <div class="step">
-            <div class="step-title">Bước 2: Bật lịch hẹn</div>
+            <div class="step-title">Bước 2: Bật lịch và chọn cách mở Zoom</div>
             <ul>
-                <li>Đảm bảo nút gạt ở cột <span class="highlight">Bật/Tắt</span> đang ở trạng thái BẬT (màu xanh)</li>
-                <li>Lịch hẹn chỉ hoạt động khi được bật</li>
-                <li>Bạn có thể tắt tạm thời mà không cần xóa lịch</li>
+                <li>Đảm bảo nút gạt ở cột <span class="highlight">Bật/Tắt</span> đang ở trạng thái BẬT</li>
+                <li>Vào <b>Menu → 💻 Cách mở Zoom</b> để chọn:
+                    <br>• <b>🌐 Trình duyệt:</b> Mở link HTTPS qua trình duyệt web (mặc định)
+                    <br>• <b>💻 App Zoom:</b> Mở thẳng ứng dụng Zoom Desktop
+                </li>
+                <li>Cài đặt sẽ được lưu tự động cho lần sau</li>
             </ul>
         </div>
         
         <div class="step">
             <div class="step-title">Bước 3: Để phần mềm chạy ngầm</div>
             <ul>
-                <li>Giữ phần mềm <b>mở</b> (có thể thu nhỏ cửa sổ)</li>
-                <li>Khi đến giờ, phần mềm sẽ tự động mở Zoom trong trình duyệt</li>
-                <li>Bạn sẽ nghe thông báo âm thanh khi lịch được kích hoạt</li>
+                <li>Khi nhấn nút <b>X</b> đóng cửa sổ, chọn <span class="highlight">Ẩn xuống khay hệ thống</span> (khuyến nghị)</li>
+                <li>Phần mềm sẽ thu nhỏ vào khay hệ thống và tiếp tục chạy ngầm</li>
+                <li>Khi đến giờ, phần mềm sẽ tự động mở Zoom và hiện thông báo</li>
+                <li>Lịch sắp chạy tiếp theo sẽ được <b>highlight vàng ▶</b> trên bảng + đếm ngược ở thanh trạng thái</li>
             </ul>
         </div>
         
         <h2>💡 Lưu ý quan trọng</h2>
         <ul>
-            <li>⏰ <b>Độ chính xác:</b> Lịch sẽ được kiểm tra mỗi 30 giây</li>
+            <li>🚀 <b>Vào Ngay:</b> Chọn một lịch → nhấn nút <span class="highlight">🚀 Vào Ngay</span> để mở Zoom ngay lập tức</li>
+            <li>⏰ <b>Đếm ngược:</b> Thanh trạng thái hiển thị lịch sắp tới + đếm ngược (đổi màu khi gần đến giờ)</li>
             <li>🌐 <b>Link Zoom:</b> Ưu tiên dùng link thay vì Meeting ID để vào phòng nhanh nhất</li>
             <li>🔐 <b>Tự động hoàn toàn:</b> Xem tab "Cài đặt Zoom" để tắt phòng chờ</li>
             <li>💻 <b>Giữ máy mở:</b> Máy tính cần ở trạng thái bật và không sleep khi đến giờ hẹn</li>
@@ -1184,6 +1229,12 @@ class HelpDialog(QDialog):
         <h2>🎛️ Các chức năng quản lý</h2>
         
         <div class="feature">
+            <div class="feature-title">🚀 Vào Ngay</div>
+            Chọn một lịch trong bảng → nhấn nút <span class="btn-example" style="background:#dcfce7;color:#166534;">🚀 Vào Ngay</span> ở khung chi tiết bên phải.
+            <br>Phần mềm sẽ mở Zoom ngay lập tức (theo chế độ mở đã chọn: Trình duyệt hoặc App).
+        </div>
+
+        <div class="feature">
             <div class="feature-title">🔄 Bật/Tắt lịch</div>
             Sử dụng nút gạt ở cột đầu tiên để bật/tắt lịch hẹn mà không cần xóa.
             <br>• <b>Màu xanh:</b> Lịch đang hoạt động
@@ -1192,27 +1243,21 @@ class HelpDialog(QDialog):
         
         <div class="feature">
             <div class="feature-title">✏️ Chỉnh sửa lịch</div>
-            Nhấn nút <span class="btn-example">Sửa</span> để thay đổi thông tin:
-            <br>• Đổi tên phòng họp
-            <br>• Cập nhật link, Meeting ID, hoặc mật khẩu
+            Chọn lịch → nhấn nút <span class="btn-example">✏️ Sửa</span> hoặc <b>double-click</b> để thay đổi:
+            <br>• Đổi tên, link, Meeting ID, mật khẩu
             <br>• Thay đổi giờ hoặc tần suất lặp lại
+            <br>• Hệ thống sẽ cảnh báo nếu tạo lịch trùng
         </div>
         
         <div class="feature">
             <div class="feature-title">📋 Nhân bản lịch</div>
-            Nhấn nút <span class="btn-example">Nhân bản</span> để tạo bản sao của lịch hiện tại.
+            Nhấn nút <span class="btn-example">📋 Nhân bản</span> để tạo bản sao của lịch hiện tại.
             <br>Tiện lợi khi bạn cần tạo nhiều lịch tương tự nhau.
         </div>
         
         <div class="feature">
-            <div class="feature-title">🧪 Test Zoom</div>
-            Nhấn nút <span class="btn-example">Test</span> để kiểm tra link/ID có hoạt động không.
-            <br>Phần mềm sẽ mở Zoom ngay lập tức để bạn xác nhận.
-        </div>
-        
-        <div class="feature">
             <div class="feature-title">🗑️ Xóa lịch</div>
-            Nhấn nút <span class="btn-example" style="background:#fee2e2;color:#991b1b;">Xóa</span> để xóa vĩnh viễn lịch hẹn.
+            Nhấn nút <span class="btn-example" style="background:#fee2e2;color:#991b1b;">🗑️ Xóa</span> để xóa vĩnh viễn lịch hẹn.
             <br><b>Lưu ý:</b> Hành động này không thể hoàn tác!
         </div>
         
@@ -1221,15 +1266,17 @@ class HelpDialog(QDialog):
             <b>• Không lặp:</b> Chỉ chạy một lần duy nhất
             <br><b>• Hàng ngày:</b> Lặp lại mỗi ngày
             <br><b>• Hàng tuần:</b> Lặp lại mỗi tuần vào cùng thứ
+            <br><b>• Các ngày trong tuần (T2-T6):</b> Lặp lại từ Thứ 2 đến Thứ 6
             <br><b>• Tùy chỉnh:</b> Tự định nghĩa chu kỳ (mỗi X ngày/tuần/tháng/năm)
         </div>
         
-        <h2>👁️ Xem chi tiết</h2>
+        <h2>👁️ Bảng lịch & Chi tiết</h2>
         <div class="feature">
-            Nhấn vào một dòng trong bảng để xem thông tin chi tiết ở khung bên phải:
-            <br>• Thời gian kế tiếp lịch sẽ chạy
-            <br>• Các lần chạy trong tương lai
-            <br>• Thông tin đầy đủ về phòng họp
+            <b>Bảng chính</b> hiển thị: Bật/Tắt, Thời gian, Tên phòng, 🔗 (biểu tượng có link), Lặp lại.
+            <br>• Rê chuột vào tên → hiện tooltip với Meeting ID và Link Zoom đầy đủ
+            <br>• Lịch sắp chạy tiếp theo được <b>highlight vàng</b> với ký hiệu <b>▶</b>
+            <br><br><b>Khung chi tiết (bên phải):</b>
+            <br>Nhấn chọn một dòng để xem đầy đủ: Tên, Thời gian, Meeting ID, Mật khẩu, Link Zoom, Lặp lại.
         </div>
         """
         
@@ -1343,6 +1390,27 @@ class HelpDialog(QDialog):
             <b>🔒 Lưu ý bảo mật:</b> Việc tắt Phòng chờ có thể làm giảm tính bảo mật. Chỉ chia sẻ link/ID với người tin tưởng.
         </div>
         
+        <h2 style="color:#059669;">💻 Chế độ mở Zoom</h2>
+        
+        <div class="success">
+            Phần mềm hỗ trợ <b>2 cách</b> mở Zoom khi đến giờ hẹn. Thay đổi tại: <b>Menu → 💻 Cách mở Zoom</b>
+        </div>
+        
+        <div class="success">
+            <b>🌐 Mở bằng Trình duyệt</b> (mặc định)
+            <br>• Mở link HTTPS trong trình duyệt web mặc định
+            <br>• Trình duyệt sẽ hỏi bạn có muốn mở bằng Zoom app hay không
+            <br>• Phù hợp khi bạn muốn chọn mở trên web hoặc app tùy lúc
+        </div>
+        
+        <div class="success">
+            <b>💻 Mở bằng App Zoom Desktop</b>
+            <br>• Mở thẳng ứng dụng Zoom Desktop trên máy tính
+            <br>• Không cần qua trình duyệt, nhanh hơn
+            <br>• Yêu cầu đã cài đặt Zoom Desktop trên máy
+            <br>• Phù hợp khi bạn luôn muốn dùng Zoom app
+        </div>
+
         <h3>🌐 Tại sao nên dùng Link thay vì Meeting ID?</h3>
         <div class="success">
             • Link Zoom chứa đầy đủ Meeting ID + Password<br>
@@ -1392,18 +1460,19 @@ class HelpDialog(QDialog):
         <h2>❓ Câu hỏi thường gặp (FAQ)</h2>
         
         <div class="faq">
-            <div class="question">Q: Phần mềm có tự động bật Zoom app không?</div>
+            <div class="question">Q: Phần mềm mở Zoom bằng trình duyệt hay app?</div>
             <div class="answer">
-                <b>A:</b> Không. Phần mềm sẽ mở link Zoom trong trình duyệt web mặc định. 
-                Trình duyệt sẽ hỏi bạn có muốn mở bằng Zoom app hay không. 
-                Bạn có thể chọn "Luôn cho phép" để lần sau tự động mở.
+                <b>A:</b> Bạn có thể chọn! Vào <b>Menu → 💻 Cách mở Zoom</b>:
+                <br>• <b>🌐 Trình duyệt:</b> Mở link HTTPS trong trình duyệt (mặc định)
+                <br>• <b>💻 App Zoom:</b> Mở thẳng ứng dụng Zoom Desktop (cần cài đặt Zoom Desktop)
+                <br>Cài đặt sẽ được lưu tự động.
             </div>
         </div>
         
         <div class="faq">
             <div class="question">Q: Tôi có thể đóng phần mềm sau khi thêm lịch không?</div>
             <div class="answer">
-                <b>A:</b> Không được. Phần mềm cần <b>luôn chạy</b> (có thể thu nhỏ) để kiểm tra và kích hoạt lịch đúng giờ.
+                <b>A:</b> Phần mềm cần <b>luôn chạy</b> để kích hoạt lịch đúng giờ. Khi nhấn nút X, chọn <b>"Ẩn xuống khay hệ thống"</b> — phần mềm sẽ thu nhỏ vào khay và tiếp tục hoạt động ngầm.
             </div>
         </div>
         
@@ -1443,8 +1512,10 @@ class HelpDialog(QDialog):
         <div class="faq">
             <div class="question">Q: Dữ liệu lịch của tôi được lưu ở đâu?</div>
             <div class="answer">
-                <b>A:</b> Lịch được lưu trong file <b>zoom_schedule.json</b> cùng thư mục với phần mềm. 
-                Bạn có thể sao lưu file này để giữ dữ liệu.
+                <b>A:</b> Dữ liệu được lưu trong thư mục <b>%LOCALAPPDATA%/ZoomAuto/</b>:
+                <br>• <b>zoom_schedule.json</b> — Dữ liệu lịch hẹn
+                <br>• <b>settings.json</b> — Cài đặt ứng dụng (chế độ mở Zoom...)
+                <br>Bạn có thể sao lưu thư mục này để giữ dữ liệu.
             </div>
         </div>
         
@@ -1473,183 +1544,159 @@ class HelpDialog(QDialog):
 
 
 class AboutDialog(QDialog):
-    """Dialog giới thiệu phần mềm với giao diện chuyên nghiệp"""
+    """Dialog giới thiệu phần mềm với giao diện chuyên nghiệp và hiện đại."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Giới thiệu")
-        self.setFixedSize(500, 520)
+        self.setWindowTitle("Giới thiệu Zoom Auto Scheduler")
+        self.setFixedSize(480, 500)  # Kích thước mới
         self.setModal(True)
-        
-        # Tạo layout chính
-        main_layout = QVBoxLayout()
+
+        # Layout chính
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
-        # === HEADER SECTION (Gradient background) ===
+
+        # === 1. HEADER ===
         header = QWidget()
-        header.setFixedHeight(160)
         header.setStyleSheet("""
-            QWidget {
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #2563eb,
-                    stop:1 #1e40af
-                );
-                border-radius: 0px;
-            }
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1d4ed8);
         """)
-        
         header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(30, 30, 30, 20)
-        header_layout.setSpacing(10)
+        header_layout.setContentsMargins(25, 25, 25, 25)
+        header_layout.setSpacing(8)
+
+        title = QLabel("🎥 Zoom Auto Scheduler")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: white; background: transparent;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        subtitle = QLabel("Công cụ tự động vào Zoom thông minh")
+        subtitle.setStyleSheet("font-size: 14px; color: #dbeafe; background: transparent;")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        version = QLabel(f"Phiên bản {APP_VERSION} • © 2026")
+        version.setStyleSheet("font-size: 12px; color: #93c5fd; background: transparent; margin-top: 5px;")
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addWidget(version)
+
+        # === 2. CONTENT AREA ===
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("background-color: #f8fafc; border: none;")
         
-        # Icon và tiêu đề
-        title_label = QLabel("🎥 Zoom Auto Scheduler")
-        title_label.setStyleSheet("""
-            font-size: 28px;
-            font-weight: bold;
-            color: white;
-            background: transparent;
-        """)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        subtitle_label = QLabel("Công cụ tự động vào Zoom thông minh")
-        subtitle_label.setStyleSheet("""
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.9);
-            background: transparent;
-        """)
-        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        version_label = QLabel("Version 1.0.0 • January 2026")
-        version_label.setStyleSheet("""
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.7);
-            background: transparent;
-            margin-top: 5px;
-        """)
-        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        header_layout.addWidget(title_label)
-        header_layout.addWidget(subtitle_label)
-        header_layout.addWidget(version_label)
-        header_layout.addStretch()
-        
-        # === CONTENT SECTION ===
-        content = QWidget()
-        content.setStyleSheet("background-color: white;")
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(35, 30, 35, 30)
-        content_layout.setSpacing(20)
-        
-        # Developer info
-        dev_label = QLabel("👨‍💻 Thông tin nhà phát triển")
-        dev_label.setStyleSheet("""
-            font-size: 15px;
-            font-weight: bold;
-            color: #1e293b;
-            margin-bottom: 10px;
-        """)
-        content_layout.addWidget(dev_label)
-        
-        # Info cards với style card hiện đại
-        info_style = """
-            QLabel {
-                background-color: #f8fafc;
-                padding: 12px 15px;
-                border-left: 3px solid #2563eb;
-                border-radius: 6px;
-                color: #334155;
-                font-size: 13px;
-            }
-        """
-        
-        name_label = QLabel("👤  <b>Họ tên:</b> Hồ Văn Trọng")
-        name_label.setStyleSheet(info_style)
-        content_layout.addWidget(name_label)
-        
-        phone_label = QLabel("📱  <b>Điện thoại:</b> 0936 099 625")
-        phone_label.setStyleSheet(info_style)
-        content_layout.addWidget(phone_label)
-        
-        email_label = QLabel("📧  <b>Email:</b> tronghv77@gmail.com")
-        email_label.setStyleSheet(info_style)
-        email_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        email_label.setCursor(Qt.CursorShape.IBeamCursor)
-        content_layout.addWidget(email_label)
-        
-        # Divider line
-        line = QLabel()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background-color: #e2e8f0; margin: 10px 0;")
-        content_layout.addWidget(line)
-        
-        # Thank you message
-        thank_msg = QLabel("💙 Cảm ơn bạn đã sử dụng sản phẩm!\nChúc bạn có những buổi họp hiệu quả!")
-        thank_msg.setStyleSheet("""
-            font-size: 13px;
-            color: #475569;
-            line-height: 1.6;
-            background: transparent;
-        """)
-        thank_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thank_msg.setWordWrap(True)
-        content_layout.addWidget(thank_msg)
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(30, 25, 30, 25)
+        content_layout.setSpacing(18)
+
+        # --- Thông tin nhà phát triển ---
+        dev_group = self.create_info_group(
+            "👨‍💻 Nhà phát triển",
+            [
+                ("<b>Họ tên:</b>", "Hồ Văn Trọng"),
+                ("<b>Email:</b>", "tronghv77@gmail.com"),
+                ("<b>Điện thoại:</b>", "0936 099 625"),
+            ]
+        )
+        content_layout.addWidget(dev_group)
+
+        # --- Thông tin phần mềm ---
+        software_group = self.create_info_group(
+            "📦 Thông tin phần mềm",
+            [
+                ("<b>Website:</b>", '<a href="http://autozoom.hovantrong.com/">autozoom.hovantrong.com</a>'),
+                ("<b>Mã nguồn:</b>", "Riêng tư"),
+            ]
+        )
+        content_layout.addWidget(software_group)
         
         content_layout.addStretch()
+
+        # --- Lời cảm ơn ---
+        thank_you = QLabel("💙 Cảm ơn bạn đã tin tưởng và sử dụng sản phẩm!")
+        thank_you.setStyleSheet("font-size: 13px; color: #475569; background: transparent;")
+        thank_you.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thank_you.setWordWrap(True)
+        content_layout.addWidget(thank_you)
         
-        # === FOOTER SECTION ===
+        scroll_area.setWidget(content_widget)
+
+        # === 3. FOOTER ===
         footer = QWidget()
-        footer.setStyleSheet("background-color: #f8fafc; border-top: 1px solid #e2e8f0;")
+        footer.setStyleSheet("background-color: #ffffff; border-top: 1px solid #e2e8f0;")
         footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(30, 20, 30, 20)
-        
-        ok_button = QPushButton("Đóng")
-        ok_button.setFixedSize(120, 40)
-        ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        ok_button.setStyleSheet("""
+        footer_layout.setContentsMargins(20, 15, 20, 15)
+
+        close_button = QPushButton("Đóng")
+        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_button.setFixedSize(110, 38)
+        close_button.setStyleSheet("""
             QPushButton {
-                background-color: #2563eb;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 14px;
-                font-weight: bold;
+                background-color: #2563eb; color: white; border: none;
+                border-radius: 6px; font-size: 14px; font-weight: bold;
             }
-            QPushButton:hover {
-                background-color: #1d4ed8;
-            }
-            QPushButton:pressed {
-                background-color: #1e40af;
-            }
+            QPushButton:hover { background-color: #1d4ed8; }
+            QPushButton:pressed { background-color: #1e40af; }
         """)
-        ok_button.clicked.connect(self.accept)
+        close_button.clicked.connect(self.accept)
         
         footer_layout.addStretch()
-        footer_layout.addWidget(ok_button)
-        footer_layout.addStretch()
-        
-        # Thêm các section vào layout chính
+        footer_layout.addWidget(close_button)
+
         main_layout.addWidget(header)
-        main_layout.addWidget(content, 1)
+        main_layout.addWidget(scroll_area, 1)
         main_layout.addWidget(footer)
-        
-        self.setLayout(main_layout)
-        
-        # Style tổng thể cho dialog
-        self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-                border-radius: 12px;
+
+    def create_info_group(self, title, items):
+        """Helper to create a styled group box for information."""
+        group_box = QGroupBox(title)
+        group_box.setStyleSheet("""
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                margin-top: 10px;
+                font-size: 15px;
+                font-weight: bold;
+                color: #0f172a;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 10px;
+                left: 15px;
+                background-color: #f8fafc;
             }
         """)
+        
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(20, 25, 20, 15)
+        form_layout.setHorizontalSpacing(15)
+        form_layout.setVerticalSpacing(12)
+        
+        for label_text, value_text in items:
+            label = QLabel(label_text)
+            label.setStyleSheet("font-weight: normal; color: #334155; background: transparent;")
+            
+            value = QLabel(value_text)
+            value.setStyleSheet("font-weight: normal; color: #1e293b; background: transparent;")
+            value.setOpenExternalLinks(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+
+            form_layout.addRow(label, value)
+            
+        group_box.setLayout(form_layout)
+        return group_box
 
 
 class ScheduleDialog(QDialog):
     """Dialog để thêm lịch mới"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, edit_mode=False):
         super().__init__(parent)
-        self.setWindowTitle("Thêm lịch Zoom")
+        self.edit_mode = edit_mode
+        self.setWindowTitle("Chỉnh sửa lịch Zoom" if edit_mode else "Thêm lịch Zoom")
         self.resize(550, 600)
         
         self.custom_recurrence_data = None # Store custom data
@@ -1802,10 +1849,13 @@ class ScheduleDialog(QDialog):
         header_layout.setContentsMargins(25, 15, 25, 15)
         header_layout.setSpacing(5)
         
-        title = QLabel("➕ Thêm lịch Zoom")
+        if self.edit_mode:
+            title = QLabel("✏️ Chỉnh sửa lịch Zoom")
+            subtitle = QLabel("Cập nhật thông tin lịch hẹn Zoom")
+        else:
+            title = QLabel("➕ Thêm lịch Zoom")
+            subtitle = QLabel("Tạo lịch hẹn tự động cho phòng họp Zoom")
         title.setObjectName("headerTitle")
-        
-        subtitle = QLabel("Tạo lịch hẹn tự động cho phòng họp Zoom")
         subtitle.setObjectName("headerSubtitle")
         
         header_layout.addWidget(title)
@@ -1973,11 +2023,11 @@ class ScheduleDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         cancel_btn.setFixedWidth(110)
         
-        save_btn = QPushButton("💾 Lưu")
+        save_btn = QPushButton("💾 Cập nhật" if self.edit_mode else "💾 Lưu")
         save_btn.setObjectName("saveBtn")
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.clicked.connect(self.accept)
-        save_btn.setFixedWidth(110)
+        save_btn.setFixedWidth(120)
         
         footer_layout.addStretch()
         footer_layout.addWidget(cancel_btn)
@@ -2081,7 +2131,11 @@ class ScheduleDialog(QDialog):
         """Điền dữ liệu có sẵn vào dialog (dùng cho việc chỉnh sửa)"""
         self.name_input.setText(data.get('name', ''))
         self.link_input.setText(data.get('zoom_link', ''))
-        self.meeting_id_input.setText(data.get('meeting_id', ''))
+        
+        # Hiển thị Meeting ID ở dạng đã format cho dễ đọc
+        raw_id = data.get('meeting_id', '')
+        self.meeting_id_input.setText(format_meeting_id(raw_id) if raw_id else '')
+        
         self.password_input.setText(data.get('password', ''))
         
         self.hour_combo.setCurrentText(f"{data.get('hour', 8):02d}")
@@ -2120,8 +2174,15 @@ class ScheduleDialog(QDialog):
             else: # custom
                 self.custom_recurrence_data = details
 
+        # Block signals để tránh mở CustomRecurrenceDialog khi load data
+        self.recurrence_combo.blockSignals(True)
         self.recurrence_combo.setCurrentIndex(combo_index)
-        self.on_recurrence_changed()
+        self.recurrence_combo.blockSignals(False)
+        
+        # Chỉ cập nhật UI (show/hide date picker) mà không trigger dialog
+        is_once = (combo_index == 0)
+        self.date_label.setVisible(is_once)
+        self.date_edit.setVisible(is_once)
 
 class ZoomAutoApp(QMainWindow):
     """Ứng dụng chính"""
@@ -2130,6 +2191,11 @@ class ZoomAutoApp(QMainWindow):
         self.setWindowTitle(f"🎯 Zoom Auto Scheduler v{APP_VERSION} - Hẹn Giờ Tự Động")
         self.setGeometry(100, 100, 1200, 700)
         self.setWindowIcon(QIcon(str(Path(__file__).parent / "app.ico")))
+        
+        # Load settings
+        self.open_mode = "browser"  # Mặc định: mở bằng trình duyệt
+        self.load_settings()
+        
         # Khởi tạo scheduler (trước khi UI để tránh lỗi callback)
         self.scheduler = SchedulerManager(callback=self.show_message, parent_window=self)
         self.tray_icon = None
@@ -2141,6 +2207,12 @@ class ZoomAutoApp(QMainWindow):
         self.refresh_table()
         self.init_tray()
         self.update_tray_tooltip()
+        
+        # Timer tự động cập nhật status bar (mỗi 30 giây)
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_next_run_status)
+        self.status_timer.start(30000)  # 30 giây
+        self.update_next_run_status()  # Cập nhật ngay lần đầu
     
     def init_ui(self):
         """Khởi tạo giao diện"""
@@ -2256,6 +2328,11 @@ class ZoomAutoApp(QMainWindow):
                 border-top-right-radius: 10px;
             }
             
+            /* Next-run row highlight */
+            QTableWidget QTableWidgetItem[nextRun="true"] {
+                background-color: #fffbeb;
+            }
+            
             /* Table Buttons */
             QTableWidget QPushButton {
                 background-color: #f1f5f9;
@@ -2304,6 +2381,31 @@ class ZoomAutoApp(QMainWindow):
             }
             QPushButton#testBtn:hover {
                 background-color: #fde68a;
+            }
+            
+            /* Join Now Button */
+            QPushButton#joinBtn {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #22c55e,
+                    stop:1 #16a34a
+                );
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton#joinBtn:hover {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #16a34a,
+                    stop:1 #15803d
+                );
+            }
+            QPushButton#joinBtn:pressed {
+                background: #166534;
             }
             
             /* Clone Button */
@@ -2365,18 +2467,41 @@ class ZoomAutoApp(QMainWindow):
         """
         self.setStyleSheet(APP_STYLE)
         
-        # Create Menu Bar
+        # ============================
+        # MENU BAR — Tách thành 2 menu
+        # ============================
         menu_bar = self.menuBar()
-        help_menu = menu_bar.addMenu("Menu")
-
-        about_action = help_menu.addAction("Giới thiệu")
-        about_action.triggered.connect(self.show_about)
-
-        help_action = help_menu.addAction("Hướng dẫn sử dụng")
+        
+        # --- Menu 1: Cài đặt ---
+        settings_menu = menu_bar.addMenu("⚙️ Cài đặt")
+        
+        # Cách mở Zoom (radio options trực tiếp)
+        mode_label = settings_menu.addAction("💻 Cách mở Zoom:")
+        mode_label.setEnabled(False)  # Chỉ là label
+        
+        self.mode_browser_action = QAction("    🌐 Mở bằng Trình duyệt", self, checkable=True)
+        self.mode_browser_action.setChecked(self.open_mode == "browser")
+        self.mode_browser_action.triggered.connect(lambda: self.set_open_mode("browser"))
+        settings_menu.addAction(self.mode_browser_action)
+        
+        self.mode_app_action = QAction("    💻 Mở bằng App Zoom Desktop", self, checkable=True)
+        self.mode_app_action.setChecked(self.open_mode == "app")
+        self.mode_app_action.triggered.connect(lambda: self.set_open_mode("app"))
+        settings_menu.addAction(self.mode_app_action)
+        
+        # --- Menu 2: Trợ giúp ---
+        help_menu = menu_bar.addMenu("❓ Trợ giúp")
+        
+        help_action = help_menu.addAction("📚 Hướng dẫn sử dụng")
         help_action.triggered.connect(self.show_help)
-
-        update_action = help_menu.addAction("Kiểm tra cập nhật…")
+        
+        update_action = help_menu.addAction("🔄 Kiểm tra cập nhật…")
         update_action.triggered.connect(self.check_updates)
+        
+        help_menu.addSeparator()
+        
+        about_action = help_menu.addAction("ℹ️ Giới thiệu")
+        about_action.triggered.connect(self.show_about)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -2384,14 +2509,18 @@ class ZoomAutoApp(QMainWindow):
         top_level_layout.setContentsMargins(20, 20, 20, 20)
         top_level_layout.setSpacing(20)
 
-        # === HEADER SECTION ===
+        # === HEADER SECTION (với mode indicator bên phải) ===
         header_widget = QWidget()
         header_widget.setObjectName("headerWidget")
         header_widget.setFixedHeight(100)
         
-        header_layout = QVBoxLayout(header_widget)
+        header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(25, 15, 25, 15)
-        header_layout.setSpacing(5)
+        header_layout.setSpacing(10)
+        
+        # Cột trái: Title + Subtitle
+        title_col = QVBoxLayout()
+        title_col.setSpacing(5)
         
         title = QLabel("🎯 Zoom Auto Scheduler")
         title.setObjectName("titleMain")
@@ -2399,9 +2528,48 @@ class ZoomAutoApp(QMainWindow):
         subtitle = QLabel("Quản lý lịch họp Zoom thông minh và tự động")
         subtitle.setObjectName("subtitleMain")
         
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        header_layout.addStretch()
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        title_col.addStretch()
+        
+        header_layout.addLayout(title_col, 1)
+        
+        # Cột phải: Mode indicator badge + Minimize
+        right_col = QVBoxLayout()
+        right_col.setSpacing(6)
+        right_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        
+        # Mode indicator — Clickable badge
+        self.mode_badge = QPushButton()
+        self.mode_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mode_badge.setFixedHeight(28)
+        self.mode_badge.setToolTip("Nhấn để chuyển đổi cách mở Zoom")
+        self.mode_badge.clicked.connect(self.toggle_open_mode)
+        self._update_mode_badge()
+        
+        # Minimize button
+        minimize_btn = QPushButton("Minimize")
+        minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        minimize_btn.setFixedHeight(26)
+        minimize_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.2);
+                color: white;
+                border: 1px solid rgba(255,255,255,0.35);
+                border-radius: 4px;
+                font-size: 11px;
+                padding: 2px 12px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.35);
+            }
+        """)
+        minimize_btn.clicked.connect(self.showMinimized)
+        
+        right_col.addWidget(minimize_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        right_col.addWidget(self.mode_badge, alignment=Qt.AlignmentFlag.AlignRight)
+        
+        header_layout.addLayout(right_col)
         
         top_level_layout.addWidget(header_widget)
 
@@ -2413,14 +2581,15 @@ class ZoomAutoApp(QMainWindow):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Bật/Tắt", "THỜI GIAN", "Tên phòng Zoom", "Meeting ID", "Link Zoom"])
+        self.table.setHorizontalHeaderLabels(["Bật/Tắt", "THỜI GIAN", "Tên phòng Zoom", "🔗", "Lặp lại"])
+        self.table.setToolTip("Chọn một hàng để xem chi tiết Meeting ID, Link Zoom ở panel bên phải")
         
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Link indicator
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Lặp lại
         
         content_layout.addWidget(self.table, 3) # Table takes 3/5 space
 
@@ -2530,33 +2699,154 @@ class ZoomAutoApp(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return "exit"
 
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setWindowTitle("Đóng cửa sổ Zoom Auto")
-        msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText("""
-    <div style='font-size:13px;'><b>Bạn muốn làm gì?</b></div>
-    <div style='color:#475569; margin-top:6px;'>Ẩn xuống khay để tiếp tục chạy nền, hoặc đóng hẳn để dừng toàn bộ lịch.</div>
-    """)
-        msg.setInformativeText("Ẩn xuống khay: Lịch vẫn chạy.  |  Đóng ứng dụng: Dừng mọi lịch đã hẹn.")
-        msg.setStyleSheet("""
-            QMessageBox { background: #f8fafc; }
-            QLabel { color: #0f172a; } 
-            QPushButton { padding: 8px 14px; font-weight: 600; }
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Đóng cửa sổ Zoom Auto")
+        dialog.setFixedSize(460, 340)
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        
+        # Store result
+        dialog._result = None
+        
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #f8fafc;
+            }
         """)
-
-        hide_btn = msg.addButton("Ẩn xuống khay (khuyến nghị)", QMessageBox.ButtonRole.AcceptRole)
-        exit_btn = msg.addButton("Đóng ứng dụng (dừng lịch)", QMessageBox.ButtonRole.DestructiveRole)
-
-        msg.setDefaultButton(hide_btn)
-        msg.exec()
-
-        clicked = msg.clickedButton()
-        if clicked == hide_btn:
-            return "hide"
-        if clicked == exit_btn:
-            return "exit"
-        return None
+        
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # === HEADER with gradient ===
+        header = QWidget()
+        header.setFixedHeight(80)
+        header.setStyleSheet("""
+            QWidget {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #0ea5e9,
+                    stop:1 #0284c7
+                );
+            }
+            QLabel { 
+                background: transparent; 
+                color: white; 
+            }
+        """)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(24, 14, 24, 14)
+        header_layout.setSpacing(4)
+        
+        header_title = QLabel("🎯 Bạn muốn làm gì?")
+        header_title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        header_subtitle = QLabel("Chọn cách bạn muốn đóng cửa sổ ứng dụng")
+        header_subtitle.setStyleSheet("font-size: 12px; color: rgba(255,255,255,0.9);")
+        header_layout.addWidget(header_title)
+        header_layout.addWidget(header_subtitle)
+        
+        main_layout.addWidget(header)
+        
+        # === BODY ===
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(24, 20, 24, 16)
+        body_layout.setSpacing(12)
+        
+        # --- Option 1: Hide to tray (recommended) ---
+        hide_btn = QPushButton()
+        hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        hide_btn.setFixedHeight(72)
+        hide_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f0fdf4;
+                border: 2px solid #86efac;
+                border-radius: 10px;
+                text-align: left;
+                padding: 12px 18px;
+                font-size: 13px;
+                color: #14532d;
+            }
+            QPushButton:hover {
+                background-color: #dcfce7;
+                border-color: #4ade80;
+            }
+            QPushButton:pressed {
+                background-color: #bbf7d0;
+            }
+        """)
+        hide_btn.setText("  🟢  Ẩn xuống khay hệ thống  ✦ Khuyến nghị\n        Lịch hẹn vẫn chạy ngầm, sẵn sàng mở Zoom đúng giờ")
+        
+        def on_hide():
+            dialog._result = "hide"
+            dialog.accept()
+        hide_btn.clicked.connect(on_hide)
+        
+        # --- Option 2: Exit app ---
+        exit_btn = QPushButton()
+        exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exit_btn.setFixedHeight(72)
+        exit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #fef2f2;
+                border: 2px solid #fca5a5;
+                border-radius: 10px;
+                text-align: left;
+                padding: 12px 18px;
+                font-size: 13px;
+                color: #7f1d1d;
+            }
+            QPushButton:hover {
+                background-color: #fee2e2;
+                border-color: #f87171;
+            }
+            QPushButton:pressed {
+                background-color: #fecaca;
+            }
+        """)
+        exit_btn.setText("  🔴  Đóng ứng dụng hoàn toàn\n        Dừng tất cả lịch đã hẹn — Zoom sẽ không tự mở")
+        
+        def on_exit():
+            dialog._result = "exit"
+            dialog.accept()
+        exit_btn.clicked.connect(on_exit)
+        
+        body_layout.addWidget(hide_btn)
+        body_layout.addWidget(exit_btn)
+        
+        main_layout.addWidget(body, 1)
+        
+        # === FOOTER ===
+        footer = QWidget()
+        footer.setStyleSheet("background-color: #f1f5f9; border-top: 1px solid #e2e8f0;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 10, 24, 10)
+        
+        cancel_btn = QPushButton("Hủy — Quay lại ứng dụng")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #64748b;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #e2e8f0;
+                color: #334155;
+            }
+        """)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        footer_layout.addStretch()
+        footer_layout.addWidget(cancel_btn)
+        
+        main_layout.addWidget(footer)
+        
+        dialog.exec()
+        return dialog._result
 
     def handle_double_click(self, item):
         """Xử lý double-click để chỉnh sửa"""
@@ -2640,6 +2930,82 @@ class ZoomAutoApp(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Cập nhật", f"Lỗi kiểm tra cập nhật: {e}")
 
+    def set_open_mode(self, mode):
+        """Đổi chế độ mở Zoom (browser / app)"""
+        self.open_mode = mode
+        
+        # Cập nhật check state menu
+        self.mode_browser_action.setChecked(mode == "browser")
+        self.mode_app_action.setChecked(mode == "app")
+        
+        # Cập nhật badge trên header
+        self._update_mode_badge()
+        
+        self.save_settings()
+        
+        mode_label = "🌐 Trình duyệt" if mode == "browser" else "💻 App Zoom Desktop"
+        self.show_message(f"✓ Chế độ mở Zoom: {mode_label}")
+
+    def toggle_open_mode(self):
+        """Chuyển đổi nhanh giữa browser và app"""
+        new_mode = "app" if self.open_mode == "browser" else "browser"
+        self.set_open_mode(new_mode)
+
+    def _update_mode_badge(self):
+        """Cập nhật giao diện badge hiển thị trên header"""
+        if self.open_mode == "app":
+            self.mode_badge.setText("💻 App Zoom")
+            self.mode_badge.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,0.25);
+                    color: white;
+                    border: 1px solid rgba(255,255,255,0.5);
+                    border-radius: 14px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background: rgba(255,255,255,0.4);
+                }
+            """)
+        else:
+            self.mode_badge.setText("🌐 Trình duyệt")
+            self.mode_badge.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,255,255,0.25);
+                    color: white;
+                    border: 1px solid rgba(255,255,255,0.5);
+                    border-radius: 14px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background: rgba(255,255,255,0.4);
+                }
+            """)
+
+    def save_settings(self):
+        """Lưu cài đặt ra file JSON"""
+        try:
+            settings = {"open_mode": self.open_mode}
+            with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"[ERROR] Lỗi lưu settings: {e}")
+
+    def load_settings(self):
+        """Tải cài đặt từ file JSON"""
+        if not SETTINGS_FILE.exists():
+            return
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                self.open_mode = settings.get("open_mode", "browser")
+        except Exception as e:
+            print(f"[ERROR] Lỗi tải settings: {e}")
+
     def create_detail_pane(self):
         """Tạo khung hiển thị chi tiết bên phải"""
         self.detail_pane = QGroupBox("📋 Chi tiết lịch hẹn")
@@ -2676,16 +3042,41 @@ class ZoomAutoApp(QMainWindow):
         """)
         
         detail_layout = QVBoxLayout()
-        # Thêm khoảng đệm (trái, trên, phải, dưới) để tạo khoảng trống với tiêu đề
         detail_layout.setContentsMargins(15, 25, 15, 15)
-        form_layout = QFormLayout()
-        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form_layout.setSpacing(10)
+        detail_layout.setSpacing(0)
+        
+        # === SCROLL AREA cho phần thông tin (co giãn khi màn hình nhỏ) ===
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_area.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QWidget#scrollContent { background: transparent; }
+        """)
+        
+        scroll_content = QWidget()
+        scroll_content.setObjectName("scrollContent")
+        scroll_inner = QVBoxLayout(scroll_content)
+        scroll_inner.setContentsMargins(0, 0, 5, 0)
+        scroll_inner.setSpacing(6)
+        
+        # === Tên phòng Zoom ===
+        name_label = QLabel("Tên:")
+        name_label.setObjectName("detailLabel")
+        scroll_inner.addWidget(name_label)
         
         self.detail_name = QLabel()
         self.detail_name.setObjectName("detailValue")
         self.detail_name.setWordWrap(True)
-        form_layout.addRow(QLabel("Tên:", objectName="detailLabel"), self.detail_name)
+        self.detail_name.setMinimumHeight(30)
+        scroll_inner.addWidget(self.detail_name)
+        
+        scroll_inner.addSpacing(6)
+        
+        # === Các trường còn lại ===
+        form_layout = QFormLayout()
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form_layout.setSpacing(10)
         
         self.detail_time = QLabel()
         self.detail_time.setObjectName("detailValue")
@@ -2693,7 +3084,7 @@ class ZoomAutoApp(QMainWindow):
 
         self.detail_id = QLabel()
         self.detail_id.setObjectName("detailValue")
-        self.detail_id.setWordWrap(True) # Cho phép xuống dòng
+        self.detail_id.setWordWrap(True)
         form_layout.addRow(QLabel("Meeting ID:", objectName="detailLabel"), self.detail_id)
         
         self.detail_pass = QLabel()
@@ -2710,10 +3101,25 @@ class ZoomAutoApp(QMainWindow):
         self.detail_recurrence.setObjectName("detailValue")
         form_layout.addRow(QLabel("Lặp lại:", objectName="detailLabel"), self.detail_recurrence)
         
-        detail_layout.addLayout(form_layout)
-        detail_layout.addStretch()
+        scroll_inner.addLayout(form_layout)
+        scroll_inner.addStretch()
         
-        # Nút chức năng với style mới
+        scroll_area.setWidget(scroll_content)
+        detail_layout.addWidget(scroll_area, 1)  # Scroll area chiếm phần co giãn
+        
+        # === NÚT HÀNH ĐỘNG (cố định ở dưới, không scroll) ===
+        detail_layout.addSpacing(8)
+        
+        self.join_button = QPushButton("🚀 Vào Ngay")
+        self.join_button.setObjectName("joinBtn")
+        self.join_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.join_button.setToolTip("Mở phòng Zoom này ngay bây giờ")
+        self.join_button.setFixedHeight(40)
+        self.join_button.clicked.connect(self.join_selected_schedule)
+        detail_layout.addWidget(self.join_button)
+        
+        detail_layout.addSpacing(6)
+        
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
         
@@ -2721,17 +3127,20 @@ class ZoomAutoApp(QMainWindow):
         self.edit_button.setObjectName("editBtn")
         self.edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.edit_button.setToolTip("Chỉnh sửa lịch này")
-        
+        self.edit_button.setFixedHeight(38)
+
         self.duplicate_button = QPushButton("📋 Nhân bản")
         self.duplicate_button.setObjectName("cloneBtn")
         self.duplicate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.duplicate_button.setToolTip("Tạo bản sao lịch này")
-        
+        self.duplicate_button.setFixedHeight(38)
+
         self.delete_button = QPushButton("🗑️ Xóa")
         self.delete_button.setObjectName("deleteBtn")
         self.delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_button.setToolTip("Xóa lịch này")
-        
+        self.delete_button.setFixedHeight(38)
+
         button_layout.addWidget(self.edit_button)
         button_layout.addWidget(self.duplicate_button)
         button_layout.addWidget(self.delete_button)
@@ -2813,6 +3222,27 @@ class ZoomAutoApp(QMainWindow):
         
         self.detail_recurrence.setText(display_str)
 
+    def join_selected_schedule(self):
+        """Mở phòng Zoom của lịch đang chọn ngay lập tức"""
+        if not self.current_selected_job_id: return
+        
+        job_data = self.scheduler.get_all_jobs().get(self.current_selected_job_id)
+        if not job_data: return
+        
+        meeting_id = job_data.get('meeting_id', '')
+        password = job_data.get('password', '')
+        zoom_link = job_data.get('zoom_link', '')
+        name = job_data.get('name', 'Zoom')
+        
+        if not meeting_id and not zoom_link:
+            QMessageBox.warning(self, "Không thể mở", 
+                "Lịch này chưa có Meeting ID hoặc Link Zoom.\n"
+                "Vui lòng chỉnh sửa để thêm thông tin kết nối.")
+            return
+        
+        self.scheduler._open_zoom(meeting_id, password, zoom_link)
+        self.show_message(f"🚀 Đã mở Zoom: {name}")
+
     def edit_selected_schedule(self):
         """Chỉnh sửa lịch đã chọn"""
         if not self.current_selected_job_id: return
@@ -2821,10 +3251,16 @@ class ZoomAutoApp(QMainWindow):
         job_data = self.scheduler.get_all_jobs().get(job_id)
         if not job_data: return
         
-        dialog = ScheduleDialog(self)
-        dialog.set_data(job_data)
+        # Dùng data hiện tại làm dữ liệu ban đầu (có thể bị thay thế khi retry)
+        edit_data = dict(job_data)
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        while True:
+            dialog = ScheduleDialog(self, edit_mode=True)
+            dialog.set_data(edit_data)
+            
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                break  # Người dùng hủy
+            
             new_data = dialog.get_data()
             
             # Kiểm tra trùng lặp (loại trừ job hiện tại)
@@ -2844,10 +3280,14 @@ class ZoomAutoApp(QMainWindow):
                     self, 
                     "Lịch trùng lặp", 
                     f"Đã có lịch '{duplicate_name}' mở cùng phòng Zoom này vào lúc {duplicate_time}.\n\n"
-                    f"Không thể tạo 2 lịch cùng mở một phòng Zoom tại cùng thời điểm."
+                    f"Không thể tạo 2 lịch cùng mở một phòng Zoom tại cùng thời điểm.\n"
+                    f"Vui lòng chỉnh sửa lại."
                 )
-                return
+                # Giữ lại dữ liệu người dùng đã nhập để mở lại dialog
+                edit_data = new_data
+                continue  # Mở lại dialog với dữ liệu đã nhập
             
+            # Lưu thành công
             self.scheduler.add_schedule(
                 job_id,
                 new_data['hour'], new_data['minute'],
@@ -2859,7 +3299,8 @@ class ZoomAutoApp(QMainWindow):
             )
             self.save_schedules()
             self.refresh_table()
-            self.find_and_select_row(job_id) # CHỌN lịch vừa chỉnh sửa
+            self.find_and_select_row(job_id)  # CHỌN lịch vừa chỉnh sửa
+            break
 
     def delete_selected_schedule(self):
         """Xóa lịch đã chọn"""
@@ -2910,7 +3351,7 @@ class ZoomAutoApp(QMainWindow):
         """Tìm và chọn dòng trong bảng dựa trên job_id"""
         if not job_id: return
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)  # job_id lưu ở cột 1
+            item = self.table.item(row, 1)  # job_id lưu ở cột 1 (THỜI GIAN)
             if item and item.data(Qt.ItemDataRole.UserRole) == job_id:
                 self.table.selectRow(row)
                 self.table.scrollToItem(item, QTableWidget.ScrollHint.PositionAtCenter)
@@ -2921,21 +3362,34 @@ class ZoomAutoApp(QMainWindow):
         self.table.setRowCount(0)
         jobs = self.scheduler.get_all_jobs()
         
+        # Lấy job_id của lịch sắp chạy tiếp theo
+        next_run = self.scheduler.get_next_run_info()
+        next_job_id = next_run[0] if next_run else None
+        
         # Sắp xếp công việc theo giờ và phút
         sorted_jobs = sorted(jobs.items(), key=lambda item: (item[1]['hour'], item[1]['minute']))
 
+        # Màu highlight cho hàng sắp chạy
+        NEXT_RUN_BG = QColor("#fffbeb")       # Amber-50
+        NEXT_RUN_TEXT = QColor("#92400e")      # Amber-800
+        DISABLED_TEXT = QColor("#94a3b8")      # Slate-400
+
         for idx, (job_id, job_data) in enumerate(sorted_jobs):
             self.table.insertRow(idx)
+            is_next = (job_id == next_job_id)
+            is_enabled = job_data.get('enabled', False)
 
             # --- Cột 0: Bật/Tắt ---
             toggle_switch = QCheckBox()
-            toggle_switch.setChecked(job_data.get('enabled', False))
+            toggle_switch.setChecked(is_enabled)
             toggle_switch.setProperty("job_id", job_id)
             toggle_switch.toggled.connect(
                 lambda checked, jid=job_id, row=idx: self.on_toggle_schedule(jid, checked, row)
             )
             
             cell_widget = QWidget()
+            if is_next:
+                cell_widget.setStyleSheet(f"background-color: {NEXT_RUN_BG.name()};")
             layout = QHBoxLayout(cell_widget)
             layout.addWidget(toggle_switch)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2957,29 +3411,184 @@ class ZoomAutoApp(QMainWindow):
                         display_str = dt.strftime("%d/%m %H:%M")
                     except: pass
             
+            # Đánh dấu ▶ cho lịch sắp chạy
+            if is_next:
+                display_str = f"▶ {display_str}"
+            
             item_time = QTableWidgetItem(display_str)
             item_time.setData(Qt.ItemDataRole.UserRole, job_id)
+            if is_next:
+                item_time.setBackground(NEXT_RUN_BG)
+                item_time.setForeground(NEXT_RUN_TEXT)
+                font = item_time.font()
+                font.setBold(True)
+                item_time.setFont(font)
+            elif not is_enabled:
+                item_time.setForeground(DISABLED_TEXT)
             self.table.setItem(idx, 1, item_time)
             
             # --- Cột 2: Tên phòng Zoom ---
-            self.table.setItem(idx, 2, QTableWidgetItem(job_data.get('name', '')))
+            name_item = QTableWidgetItem(job_data.get('name', ''))
+            meeting_id_raw = job_data.get('meeting_id', '')
+            zoom_link = job_data.get('zoom_link', '')
+            # Tooltip hiển thị Meeting ID và Link cho tiện
+            tooltip_parts = []
+            if meeting_id_raw:
+                tooltip_parts.append(f"Meeting ID: {format_meeting_id(meeting_id_raw)}")
+            if zoom_link:
+                tooltip_parts.append(f"Link: {zoom_link}")
+            if tooltip_parts:
+                name_item.setToolTip("\n".join(tooltip_parts))
+            if is_next:
+                name_item.setBackground(NEXT_RUN_BG)
+                name_item.setForeground(NEXT_RUN_TEXT)
+                font = name_item.font()
+                font.setBold(True)
+                name_item.setFont(font)
+            elif not is_enabled:
+                name_item.setForeground(DISABLED_TEXT)
+            self.table.setItem(idx, 2, name_item)
             
-            # --- Cột 3: Meeting ID ---
-            meeting_id = job_data.get('meeting_id', '')
-            self.table.setItem(idx, 3, QTableWidgetItem(format_meeting_id(meeting_id)))
+            # --- Cột 3: Indicator Link/ID ---
+            if zoom_link:
+                indicator_item = QTableWidgetItem("🔗")
+                indicator_item.setToolTip(f"Có Link Zoom\n{zoom_link[:80]}..." if len(zoom_link) > 80 else f"Có Link Zoom\n{zoom_link}")
+            elif meeting_id_raw:
+                indicator_item = QTableWidgetItem("📋")
+                indicator_item.setToolTip(f"Meeting ID: {format_meeting_id(meeting_id_raw)}")
+            else:
+                indicator_item = QTableWidgetItem("—")
+                indicator_item.setToolTip("Chưa có thông tin kết nối")
+            indicator_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if is_next:
+                indicator_item.setBackground(NEXT_RUN_BG)
+            self.table.setItem(idx, 3, indicator_item)
 
-            # --- Cột 4: Link Zoom ---
-            self.table.setItem(idx, 4, QTableWidgetItem(job_data.get('zoom_link', '')))
+            # --- Cột 4: Lặp lại (Recurrence summary) ---
+            rec_display = "Hàng ngày"
+            if rec_type == 'once':
+                run_date = rec.get('run_date')
+                if run_date:
+                    try:
+                        dt_rec = datetime.fromisoformat(run_date)
+                        rec_display = dt_rec.strftime("%d/%m/%Y")
+                    except:
+                        rec_display = "Một lần"
+                else:
+                    rec_display = "Một lần"
+            elif rec_type == 'weekdays':
+                rec_display = "T2-T6"
+            elif rec_type == 'weekly':
+                details = rec.get('details', {})
+                days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
+                rec_display = days if days else "Hàng tuần"
+            elif rec_type == 'custom':
+                details = rec.get('details', {})
+                unit = details.get('unit', '')
+                interval = details.get('interval', 1)
+                if unit == 'tuần':
+                    days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
+                    rec_display = f"{interval}w: {days}" if days else f"Mỗi {interval} tuần"
+                else:
+                    rec_display = f"Mỗi {interval} {unit}"
+            
+            rec_item = QTableWidgetItem(rec_display)
+            if is_next:
+                rec_item.setBackground(NEXT_RUN_BG)
+                rec_item.setForeground(NEXT_RUN_TEXT)
+            elif not is_enabled:
+                rec_item.setForeground(DISABLED_TEXT)
+            self.table.setItem(idx, 4, rec_item)
         
         self.table.resizeRowsToContents()
         self.update_tray_tooltip()
+        self.update_next_run_status()
+
+    def update_next_run_status(self):
+        """Cập nhật status bar với thông tin lịch sắp chạy tiếp theo"""
+        try:
+            next_info = self.scheduler.get_next_run_info()
+            if not next_info:
+                self.status_label.setText("✓ Đang chạy — Chưa có lịch nào được bật")
+                self.status_label.setStyleSheet("""
+                    color: #64748b;
+                    font-weight: 600; font-size: 13px;
+                    padding: 8px 12px;
+                    background-color: #f1f5f9;
+                    border-radius: 6px;
+                """)
+                return
+            
+            job_id, next_dt = next_info
+            jobs = self.scheduler.get_all_jobs()
+            job_data = jobs.get(job_id, {})
+            name = job_data.get('name') or 'Zoom'
+            
+            # Tính khoảng cách thời gian
+            now = datetime.now(next_dt.tzinfo) if next_dt.tzinfo else datetime.now()
+            delta = next_dt - now
+            total_seconds = int(delta.total_seconds())
+            
+            if total_seconds < 0:
+                countdown_text = "đang mở..."
+            elif total_seconds < 60:
+                countdown_text = f"trong {total_seconds} giây"
+            elif total_seconds < 3600:
+                minutes = total_seconds // 60
+                countdown_text = f"trong {minutes} phút"
+            elif total_seconds < 86400:
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                countdown_text = f"trong {hours}h{minutes:02d}p" if minutes else f"trong {hours} giờ"
+            else:
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                countdown_text = f"trong {days} ngày {hours}h" if hours else f"trong {days} ngày"
+            
+            try:
+                local_dt = next_dt.astimezone() if next_dt.tzinfo else next_dt
+                time_str = local_dt.strftime('%H:%M')
+            except Exception:
+                time_str = f"{job_data.get('hour', 0):02d}:{job_data.get('minute', 0):02d}"
+            
+            self.status_label.setText(f"▶ Sắp tới: {name} lúc {time_str} — {countdown_text}")
+            
+            # Đổi màu theo mức độ gần
+            if total_seconds < 300:  # < 5 phút
+                self.status_label.setStyleSheet("""
+                    color: #dc2626;
+                    font-weight: 700; font-size: 13px;
+                    padding: 8px 12px;
+                    background-color: #fef2f2;
+                    border-radius: 6px;
+                    border: 1px solid #fecaca;
+                """)
+            elif total_seconds < 1800:  # < 30 phút
+                self.status_label.setStyleSheet("""
+                    color: #d97706;
+                    font-weight: 600; font-size: 13px;
+                    padding: 8px 12px;
+                    background-color: #fffbeb;
+                    border-radius: 6px;
+                    border: 1px solid #fde68a;
+                """)
+            else:
+                self.status_label.setStyleSheet("""
+                    color: #0284c7;
+                    font-weight: 600; font-size: 13px;
+                    padding: 8px 12px;
+                    background-color: #e0f2fe;
+                    border-radius: 6px;
+                """)
+        except Exception:
+            self.status_label.setText("✓ Ứng dụng đang chạy...")
 
     def on_toggle_schedule(self, job_id, is_enabled, row):
         """Xử lý khi công tắc bật/tắt được gạt"""
         if self.scheduler.toggle_schedule(job_id, is_enabled):
             self.save_schedules()
+            self.refresh_table()  # Refresh để cập nhật highlight
             self.table.selectRow(row)
-            # Không cần refresh toàn bộ bảng, chỉ cần cập nhật trạng thái
             status = "bật" if is_enabled else "tắt"
             self.show_message(f"✓ Đã {status} lịch")
             self.update_tray_tooltip()

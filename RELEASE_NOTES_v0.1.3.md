@@ -49,6 +49,7 @@ Use Windows Settings → Apps or the uninstaller in Start Menu.
 - Build date: January 22, 2026
 - Previous version: 0.1.2
 - Changelog: See features above
+- SHA256: 56ABB158CC410887360A282F77424D84EE1692C7748EFFDBED1697D3F25E182A
 
 ---
 

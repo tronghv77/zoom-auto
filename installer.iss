@@ -1,8 +1,8 @@
 ; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 0.1.3
+; Generated for version 1.0.0
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "0.1.3"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
@@ -27,6 +27,10 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ChangesAssociations=no
+; Auto close running application before update
+CloseApplications=yes
+CloseApplicationsFilter=*.exe
+RestartApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
