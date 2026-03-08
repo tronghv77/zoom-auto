@@ -1842,7 +1842,13 @@ class ScheduleDialog(QDialog):
         super().__init__(parent)
         self.edit_mode = edit_mode
         self.setWindowTitle("Chỉnh sửa lịch Zoom" if edit_mode else "Thêm lịch Zoom")
-        self.resize(550, 600)
+        self.resize(550, 680)
+        self.setMinimumWidth(480)
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_h = screen.availableGeometry().height()
+            max_h = min(680, int(screen_h * 0.88))
+            self.resize(550, max_h)
         
         self.custom_recurrence_data = None # Store custom data
         
@@ -2276,9 +2282,32 @@ class ScheduleDialog(QDialog):
         footer_layout.addWidget(cancel_btn)
         footer_layout.addWidget(save_btn)
         
+        # Wrap content in scroll area (adapts to small screens)
+        scroll = QScrollArea()
+        scroll.setWidget(content_widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical {
+                width: 8px;
+                background: transparent;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #0ea5e9;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+        """)
+
         # Assemble all
         main_layout.addWidget(header)
-        main_layout.addWidget(content_widget, 1)
+        main_layout.addWidget(scroll, 1)
         main_layout.addWidget(footer)
         
         self.setLayout(main_layout)
