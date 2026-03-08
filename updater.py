@@ -205,7 +205,21 @@ exit /b 0
 
 def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
     if not getattr(sys, "frozen", False):
-        return False, "Chỉ hỗ trợ tự cập nhật cho bản đóng gói (.exe)."
+        return False, "Ch? h? tr? t? c?p nh?t cho b?n ??ng g?i (.exe)."
+
+    # Preferred path: release payload is installer .exe.
+    # Run installer directly to avoid cmd/batch window.
+    if downloaded_file.suffix.lower() == ".exe":
+        try:
+            subprocess.Popen(
+                [str(downloaded_file), "/CLOSEAPPLICATIONS", "/NORESTART"],
+                close_fds=True,
+            )
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    # Fallback path for non-installer payloads.
     current_exe = Path(sys.executable)
     bat = _write_apply_batch(current_exe, downloaded_file)
     try:
@@ -217,8 +231,6 @@ def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
         return True, None
     except Exception as e:
         return False, str(e)
-
-
 def check_and_update_ui(parent) -> None:
     """Qt-based update flow: check → prompt → download → verify → apply.
     This is UI-bound; import Qt only here.
