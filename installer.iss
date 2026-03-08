@@ -2,7 +2,7 @@
 ; Generated for version 1.1.2
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "1.1.2"
+#define MyAppVersion "1.1.3"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
