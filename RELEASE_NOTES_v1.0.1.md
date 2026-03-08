@@ -1,17 +1,17 @@
 # Zoom Auto Scheduler v1.0.1
 
-## Bug Fixes
+## Sửa lỗi
 
-- Fixed next-upcoming schedule highlighting becoming incorrect over time.
-- Optimized next-upcoming highlight updates to refresh only affected rows instead of rebuilding the entire table.
-- Fixed checkbox visibility issue in the first column when highlighting the next-upcoming row.
-- Fixed inconsistent text color for highlighted/selected rows across different Windows machines and themes.
-- Fixed intermittent "text disappears until clicked" issue by enforcing explicit table item foreground colors.
+- Sửa lỗi highlight lịch sắp diễn ra bị sai sau một thời gian chạy.
+- Tối ưu cập nhật highlight: chỉ cập nhật các dòng thay đổi, không làm mới toàn bộ bảng.
+- Sửa lỗi mất hiển thị dấu tick/checkbox ở cột đầu khi dòng được highlight.
+- Sửa lỗi màu chữ không đồng nhất giữa các máy Windows/theme khác nhau.
+- Sửa lỗi một số máy không nhìn thấy chữ lịch (chỉ hiện khi bấm chọn).
 
-## Data Safety
+## An toàn dữ liệu
 
-- User data remains stored in `%LOCALAPPDATA%\ZoomAuto\`:
+- Dữ liệu người dùng vẫn được lưu tại `%LOCALAPPDATA%\ZoomAuto\`:
   - `zoom_schedule.json`
   - `settings.json`
 
-Updating from v1.0.0 to v1.0.1 does not delete these files.
+Cập nhật từ `v1.0.0` lên `v1.0.1` không xóa các file dữ liệu này.
