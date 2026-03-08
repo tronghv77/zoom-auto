@@ -2218,13 +2218,13 @@ class ScheduleDialog(QDialog):
         self.retry_attempts_spin = QSpinBox()
         self.retry_attempts_spin.setRange(1, 5)
         self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY["max_attempts"])
-        self.retry_attempts_spin.setFixedWidth(55)
+        self.retry_attempts_spin.setFixedWidth(75)
         self.retry_attempts_spin.setToolTip("Số lần thử lại tối đa trên mỗi cách mở (1–5)")
 
         self.retry_delay_spin = QSpinBox()
         self.retry_delay_spin.setRange(0, 60)
         self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY["delay_seconds"])
-        self.retry_delay_spin.setFixedWidth(55)
+        self.retry_delay_spin.setFixedWidth(75)
         self.retry_delay_spin.setToolTip("Thời gian chờ giữa các lần thử (0–60 giây)")
 
         retry_row.addWidget(QLabel("Thử lại"))
