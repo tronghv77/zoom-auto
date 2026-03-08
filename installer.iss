@@ -1,8 +1,8 @@
-﻿; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 1.1.2
+; Inno Setup Script for Zoom Auto Scheduler
+; Generated for version 1.1.4
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "1.1.3"
+#define MyAppVersion "1.1.4"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
@@ -27,7 +27,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ChangesAssociations=no
-SetupIconFile=dist\app.ico
+SetupIconFile=app.ico
 UninstallDisplayIcon={app}\app.ico
 ; Auto close running application before update
 CloseApplications=yes
@@ -40,7 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 0,6.1
-Name: "startupmenu"; Description: "Cháº¡y tá»± Ä‘á»™ng khi khá»Ÿi Ä‘á»™ng mÃ¡y"; GroupDescription: "Khá»Ÿi Ä‘á»™ng"
+Name: "startupmenu"; Description: "Run automatically when Windows starts"; GroupDescription: "Startup"
 
 [Files]
 Source: "{#SourceDir}\ZoomAuto\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -48,12 +48,12 @@ Source: "{#SourceDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
-Name: "{group}\Dá»¡ cÃ i Ä‘áº·t {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\app.ico"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\app.ico"
 Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon; IconFilename: "{app}\app.ico"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Cháº¡y {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Registry]
 ; Startup task for "Run on startup" option
@@ -63,5 +63,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 Type: filesandordirs; Name: "{app}\*"
 
 [UninstallDelete]
-; Chá»‰ xÃ³a file log, giá»¯ láº¡i dá»¯ liá»‡u lá»‹ch (zoom_schedule.json)
+; Only remove log file, keep user schedule data (zoom_schedule.json)
 Type: files; Name: "{localappdata}\ZoomAuto\zoom_auto.log"
