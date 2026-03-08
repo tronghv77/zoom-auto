@@ -1,8 +1,13 @@
 import sys
 import json
 import os
+import re
+import time
+import platform
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
@@ -546,10 +551,13 @@ class CustomRecurrenceDialog(QDialog):
 from PyQt6.QtGui import QIcon, QColor, QAction, QPalette
 from apscheduler.schedulers.background import BackgroundScheduler
 import webbrowser
-import subprocess
 import uuid
 from version import __version__ as APP_VERSION
 import updater
+try:
+    import sentry_sdk
+except Exception:
+    sentry_sdk = None
 
 # Đường dẫn lưu trữ dữ liệu (AppData hoặc cùng EXE)
 # Luôn lưu data vào AppData (Windows best practice)
@@ -560,6 +568,59 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 SCHEDULE_FILE = BASE_DIR / "zoom_schedule.json"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+
+SENTRY_DSN_ENV = "ZOOMAUTO_SENTRY_DSN"
+DEFAULT_JOIN_PROFILE = {"mode_priority": ["app", "browser", "raw"]}
+DEFAULT_RETRY_POLICY = {"max_attempts": 2, "delay_seconds": 3, "fallback_enabled": True}
+
+
+class JoinOpenError(Exception):
+    """Lỗi mở Zoom có mã lỗi chuẩn để hiển thị và gửi log."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def init_sentry() -> None:
+    dsn = os.getenv(SENTRY_DSN_ENV, "").strip()
+    if not dsn:
+        try:
+            if SETTINGS_FILE.exists():
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    dsn = str(cfg.get("sentry_dsn", "")).strip()
+        except Exception:
+            dsn = ""
+    if not dsn or sentry_sdk is None:
+        return
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            release=f"zoom-auto@{APP_VERSION}",
+            environment="production" if getattr(sys, "frozen", False) else "development",
+            traces_sample_rate=0.0,
+        )
+        sentry_sdk.set_tag("os", platform.platform())
+        sentry_sdk.set_tag("python", platform.python_version())
+    except Exception as e:
+        print(f"[SENTRY] Init failed: {e}")
+
+
+def report_error_to_sentry(exc: Exception, context: Optional[Dict] = None) -> None:
+    if sentry_sdk is None:
+        return
+    try:
+        if context:
+            with sentry_sdk.push_scope() as scope:
+                for k, v in context.items():
+                    scope.set_extra(k, v)
+                sentry_sdk.capture_exception(exc)
+        else:
+            sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
 
 class ZoomOpener(QThread):
     """Thread để mở Zoom"""
@@ -586,18 +647,18 @@ class ZoomOpener(QThread):
             # Emit signal nếu được kết nối
             try:
                 self.status_signal.emit(f"✓ Mở Zoom {self.meeting_id} thành công")
-            except:
+            except Exception:
                 pass
-            
+
             print(f"[DEBUG] Zoom đã được trigger")
-            
+
         except Exception as e:
             print(f"[ERROR] Lỗi mở Zoom: {e}")
             import traceback
             traceback.print_exc()
             try:
                 self.status_signal.emit(f"✗ Lỗi: {str(e)}")
-            except:
+            except Exception:
                 pass
 
 class SchedulerManager:
@@ -610,7 +671,7 @@ class SchedulerManager:
         self.active_threads = [] # Danh sách giữ các thread đang chạy
         self.parent_window = parent_window # Thêm parent_window
     
-    def add_schedule(self, job_id, hour, minute, meeting_id, password="", enabled=True, name="", recurrence=None, zoom_link=""):
+    def add_schedule(self, job_id, hour, minute, meeting_id, password="", enabled=True, name="", recurrence=None, zoom_link="", join_profile=None, retry_policy=None, last_run_meta=None):
         """Thêm hoặc cập nhật lịch"""
         try:
             # Nếu job_id chưa có (thêm mới), tạo UUID
@@ -627,7 +688,10 @@ class SchedulerManager:
                 'password': password,
                 'zoom_link': zoom_link,
                 'enabled': enabled,
-                'recurrence': recurrence
+                'recurrence': recurrence,
+                'join_profile': join_profile or dict(DEFAULT_JOIN_PROFILE),
+                'retry_policy': retry_policy or dict(DEFAULT_RETRY_POLICY),
+                'last_run_meta': last_run_meta or {}
             }
             
             if enabled and recurrence:
@@ -653,7 +717,8 @@ class SchedulerManager:
                          # Invalid once config — xóa job cũ nếu có rồi return
                          try:
                              self.scheduler.remove_job(job_id)
-                         except: pass
+                         except Exception:
+                             pass
                          return job_id
                          
                 elif rec_type == 'daily':
@@ -693,7 +758,7 @@ class SchedulerManager:
                     self._open_zoom,
                     trigger_type,
                     id=job_id,
-                    args=[meeting_id, password, zoom_link],
+                    args=[job_id, meeting_id, password, zoom_link],
                     replace_existing=True,
                     **trigger_args
                 )
@@ -701,7 +766,8 @@ class SchedulerManager:
             else:
                 try:
                     self.scheduler.remove_job(job_id)
-                except: pass
+                except Exception:
+                    pass
             
             if self.callback:
                 self.callback(f"✓ Cập nhật lịch thành công")
@@ -714,67 +780,143 @@ class SchedulerManager:
             traceback.print_exc()
             return None
     
-    def _open_zoom(self, meeting_id, password, zoom_link=""):
-        """Mở Zoom"""
-        print(f"[LOG] Scheduler trigger: Mở Zoom lúc {datetime.now().strftime('%H:%M:%S')}")
-        
-        # Lấy chế độ mở từ settings
-        open_mode = "browser"  # Mặc định
-        if self.parent_window:
-            try:
-                open_mode = self.parent_window.open_mode
-            except AttributeError:
-                pass
-        
-        if open_mode == "app":
-            # === Mở bằng ứng dụng Zoom Desktop ===
-            if zoom_link:
-                # Phân tích link Zoom để lấy meeting ID và password
-                import re
-                match = re.search(r'/j/(\d+)', zoom_link)
-                link_id = match.group(1) if match else meeting_id
-                pwd_match = re.search(r'[?&]pwd=([^&]+)', zoom_link)
-                link_pwd = pwd_match.group(1) if pwd_match else password
-                
-                url = f"zoommtg://zoom.us/join?confno={link_id}"
-                if link_pwd:
-                    url += f"&pwd={link_pwd}"
-                print(f"[LOG] Opening Zoom App (from link): {url}")
-            else:
-                url = f"zoommtg://zoom.us/join?confno={meeting_id}"
-                if password:
-                    url += f"&pwd={password}"
-                print(f"[LOG] Opening Zoom App: {url}")
-            
-            # Dùng os.startfile trên Windows để mở protocol URL
-            try:
-                os.startfile(url)
-            except Exception:
-                webbrowser.open(url)  # Fallback
-        else:
-            # === Mở bằng trình duyệt ===
-            if zoom_link:
-                url = zoom_link
-                print(f"[LOG] Opening Zoom Link (browser): {url}")
-            else:
-                if password:
-                    url = f"https://us06web.zoom.us/j/{meeting_id}?pwd={password}"
+    def _open_zoom(self, job_id, meeting_id="", password="", zoom_link=""):
+        """Mo Zoom theo profile + retry/fallback cho tung lich."""
+        print(f"[LOG] Scheduler trigger: Mo Zoom luc {datetime.now().strftime('%H:%M:%S')} - job={job_id}")
+
+        job_data = self.jobs.get(job_id, {})
+        meeting_id = meeting_id or job_data.get("meeting_id", "")
+        password = password or job_data.get("password", "")
+        zoom_link = zoom_link or job_data.get("zoom_link", "")
+
+        join_profile = job_data.get("join_profile") or dict(DEFAULT_JOIN_PROFILE)
+        retry_policy = job_data.get("retry_policy") or dict(DEFAULT_RETRY_POLICY)
+        modes = join_profile.get("mode_priority") or list(DEFAULT_JOIN_PROFILE["mode_priority"])
+        modes = [m for m in modes if m in ("app", "browser", "raw")]
+        if not modes:
+            modes = list(DEFAULT_JOIN_PROFILE["mode_priority"])
+
+        try:
+            max_attempts = max(1, min(5, int(retry_policy.get("max_attempts", DEFAULT_RETRY_POLICY["max_attempts"]))))
+        except Exception:
+            max_attempts = DEFAULT_RETRY_POLICY["max_attempts"]
+        try:
+            delay_seconds = max(0, min(60, int(retry_policy.get("delay_seconds", DEFAULT_RETRY_POLICY["delay_seconds"]))))
+        except Exception:
+            delay_seconds = DEFAULT_RETRY_POLICY["delay_seconds"]
+        fallback_enabled = bool(retry_policy.get("fallback_enabled", DEFAULT_RETRY_POLICY["fallback_enabled"]))
+
+        def build_app_url(mid: str, pwd: str, link: str) -> str:
+            match = re.search(r"/j/(\d+)", link or "")
+            link_id = match.group(1) if match else ""
+            pwd_match = re.search(r"[?&]pwd=([^&]+)", link or "")
+            link_pwd = pwd_match.group(1) if pwd_match else ""
+            target_id = link_id or mid
+            target_pwd = link_pwd or pwd
+            if not target_id:
+                raise JoinOpenError("INVALID_MEETING_ID", "Thieu Meeting ID de mo App.")
+            return f"zoommtg://zoom.us/join?confno={target_id}&pwd={target_pwd}" if target_pwd else f"zoommtg://zoom.us/join?confno={target_id}"
+
+        def build_browser_url(mid: str, pwd: str, link: str) -> str:
+            if link:
+                return link
+            if not mid:
+                raise JoinOpenError("INVALID_MEETING_ID", "Thieu Meeting ID de mo trinh duyet.")
+            return f"https://us06web.zoom.us/j/{mid}?pwd={pwd}" if pwd else f"https://us06web.zoom.us/j/{mid}"
+
+        def open_mode(mode: str) -> str:
+            if mode == "app":
+                url = build_app_url(meeting_id, password, zoom_link)
+                try:
+                    os.startfile(url)
+                except Exception as ex:
+                    raise JoinOpenError("APP_NOT_INSTALLED", f"Khong mo duoc Zoom App: {ex}")
+                return url
+            if mode == "browser":
+                url = build_browser_url(meeting_id, password, zoom_link)
+                ok = webbrowser.open(url)
+                if ok is False:
+                    raise JoinOpenError("BROWSER_OPEN_FAILED", "Trinh duyet khong mo duoc URL.")
+                return url
+            if mode == "raw":
+                if not zoom_link:
+                    raise JoinOpenError("INVALID_URL", "Khong co Link Zoom raw.")
+                if zoom_link.startswith("zoommtg://"):
+                    try:
+                        os.startfile(zoom_link)
+                    except Exception as ex:
+                        raise JoinOpenError("RAW_OPEN_FAILED", f"Khong mo duoc deep link: {ex}")
                 else:
-                    url = f"https://us06web.zoom.us/j/{meeting_id}"
-                print(f"[LOG] Opening HTTPS URL (browser): {url}")
-            
-            webbrowser.open(url)
-        
-        mode_label = "💻 App" if open_mode == "app" else "🌐 Trình duyệt"
+                    ok = webbrowser.open(zoom_link)
+                    if ok is False:
+                        raise JoinOpenError("RAW_OPEN_FAILED", "Khong mo duoc link raw.")
+                return zoom_link
+            raise JoinOpenError("INVALID_MODE", f"Mode khong hop le: {mode}")
+
+        total_attempts = 0
+        last_error = None
+        success_mode = None
+
+        for mode_idx, mode in enumerate(modes):
+            for attempt in range(1, max_attempts + 1):
+                total_attempts += 1
+                try:
+                    open_mode(mode)
+                    success_mode = mode
+                    last_error = None
+                    break
+                except JoinOpenError as ex:
+                    last_error = ex
+                    if self.callback:
+                        self.callback(f"[WARN] [{job_data.get('name', 'Zoom')}] {mode.upper()} {attempt}/{max_attempts} loi: {ex.message}")
+                    if attempt < max_attempts and delay_seconds > 0:
+                        time.sleep(delay_seconds)
+            if success_mode:
+                break
+            if not fallback_enabled:
+                break
+            if mode_idx < len(modes) - 1 and self.callback:
+                self.callback(f"[INFO] Fallback: {mode.upper()} -> {modes[mode_idx + 1].upper()}")
+
+        if success_mode:
+            job_data["last_run_meta"] = {
+                "last_run_time": datetime.now().isoformat(),
+                "last_status": "success",
+                "last_mode": success_mode,
+                "last_attempt_count": total_attempts,
+                "last_error_code": None,
+                "last_error_message": None,
+            }
+            if self.callback:
+                self.callback(f"[OK] Da mo Zoom ({success_mode.upper()}): {meeting_id if meeting_id else 'Link'}")
+            if self.parent_window:
+                try:
+                    name = job_data.get("name") or meeting_id or (zoom_link if zoom_link else "Zoom")
+                    self.parent_window.show_tray_notification("Da mo Zoom", name)
+                except Exception:
+                    pass
+            return True
+
+        error_code = getattr(last_error, "code", "UNKNOWN_ERROR")
+        error_message = str(last_error) if last_error else "Khong ro nguyen nhan"
+        job_data["last_run_meta"] = {
+            "last_run_time": datetime.now().isoformat(),
+            "last_status": "failed",
+            "last_mode": None,
+            "last_attempt_count": total_attempts,
+            "last_error_code": error_code,
+            "last_error_message": error_message,
+        }
         if self.callback:
-            self.callback(f"✓ Đã mở Zoom ({mode_label}): {meeting_id if meeting_id else 'Link'}")
-        if self.parent_window:
-            try:
-                name = meeting_id if meeting_id else (zoom_link if zoom_link else "Zoom")
-                self.parent_window.show_tray_notification("Đã mở Zoom", name)
-            except Exception:
-                pass
-    
+            self.callback(f"[ERR] Khong mo duoc Zoom: {error_code} - {error_message}")
+        report_error_to_sentry(last_error or Exception(f"JoinZoomFailed[{job_id}] {error_code}: {error_message}"), {"job_id": job_id, "attempts": total_attempts, "mode_priority": ",".join(modes), "error_code": error_code})
+        return False
+
+    def run_job_now(self, job_id):
+        if not job_id or job_id not in self.jobs:
+            return False
+        return self._open_zoom(job_id)
+
     def _cleanup_thread(self, thread):
         """Dọn dẹp thread đã xong"""
         if thread in self.active_threads:
@@ -788,11 +930,11 @@ class SchedulerManager:
                 # Xóa khỏi scheduler
                 try:
                     self.scheduler.remove_job(job_id)
-                except:
+                except Exception:
                     pass
                 try:
                     self.scheduler.remove_job(f"remind_{job_id}")
-                except:
+                except Exception:
                     pass
                     
                 del self.jobs[job_id]
@@ -818,7 +960,10 @@ class SchedulerManager:
                     enabled,
                     job_data.get('name', ''),
                     recurrence=job_data.get('recurrence'),
-                    zoom_link=job_data.get('zoom_link', '')
+                    zoom_link=job_data.get('zoom_link', ''),
+                    join_profile=job_data.get('join_profile'),
+                    retry_policy=job_data.get('retry_policy'),
+                    last_run_meta=job_data.get('last_run_meta'),
                 )
                 
                 if self.callback:
@@ -1877,7 +2022,7 @@ class ScheduleDialog(QDialog):
         label_name = QLabel("Tên phòng Zoom <font color='#dc2626'>*</font>:")
         layout.addRow(label_name, self.name_input)
         
-        # Link Zoom (Mới)
+        # Link Zoom (Má»›i)
         self.link_input = QLineEdit()
         self.link_input.setPlaceholderText("https://us06web.zoom.us/j/...")
         self.link_input.setToolTip("Nhập link Zoom trực tiếp (nếu có)")
@@ -2003,6 +2148,43 @@ class ScheduleDialog(QDialog):
         """)
         
         layout.addRow(self.date_label, self.date_edit)
+
+        # Join profile (per schedule)
+        self.join_mode_options = [
+            ("App -> Browser -> Link raw", ["app", "browser", "raw"]),
+            ("Browser -> App -> Link raw", ["browser", "app", "raw"]),
+            ("Chỉ App", ["app"]),
+            ("Chỉ Browser", ["browser"]),
+            ("Chỉ Link raw", ["raw"]),
+        ]
+        self.join_mode_combo = QComboBox()
+        self.join_mode_combo.addItems([label for label, _ in self.join_mode_options])
+        self.join_mode_combo.setCurrentIndex(0)
+        self.join_mode_combo.setToolTip("Thứ tự áp dụng fallback khi mở Zoom thất bại")
+        layout.addRow("Profile Join:", self.join_mode_combo)
+
+        retry_layout = QHBoxLayout()
+        self.retry_attempts_spin = QSpinBox()
+        self.retry_attempts_spin.setRange(1, 5)
+        self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY["max_attempts"])
+        self.retry_attempts_spin.setToolTip("Số lần thử lại tối đa trên mỗi mode")
+
+        self.retry_delay_spin = QSpinBox()
+        self.retry_delay_spin.setRange(0, 60)
+        self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY["delay_seconds"])
+        self.retry_delay_spin.setToolTip("Thời gian chờ giữa các lần thử (giây)")
+
+        retry_layout.addWidget(QLabel("Lần thử:"))
+        retry_layout.addWidget(self.retry_attempts_spin)
+        retry_layout.addSpacing(10)
+        retry_layout.addWidget(QLabel("Trễ (giây):"))
+        retry_layout.addWidget(self.retry_delay_spin)
+        retry_layout.addStretch()
+        layout.addRow("Retry:", retry_layout)
+
+        self.fallback_checkbox = QCheckBox("Bật fallback sang mode kế tiếp khi thất bại")
+        self.fallback_checkbox.setChecked(True)
+        layout.addRow("", self.fallback_checkbox)
         
         # Event update format
         self.recurrence_combo.currentIndexChanged.connect(self.on_recurrence_changed)
@@ -2113,6 +2295,8 @@ class ScheduleDialog(QDialog):
             recurrence_type = "custom"
             recurrence_details = self.custom_recurrence_data
 
+        selected_join_modes = self.join_mode_options[self.join_mode_combo.currentIndex()][1]
+
         return {
             'name': self.name_input.text(),
             'meeting_id': self.meeting_id_input.text().replace(" ", ""),
@@ -2124,6 +2308,14 @@ class ScheduleDialog(QDialog):
                 'type': recurrence_type,
                 'run_date': dt_iso,
                 'details': recurrence_details
+            },
+            'join_profile': {
+                'mode_priority': selected_join_modes
+            },
+            'retry_policy': {
+                'max_attempts': self.retry_attempts_spin.value(),
+                'delay_seconds': self.retry_delay_spin.value(),
+                'fallback_enabled': self.fallback_checkbox.isChecked()
             }
         }
 
@@ -2155,7 +2347,7 @@ class ScheduleDialog(QDialog):
                 try:
                     dt = QDateTime.fromString(recurrence.get('run_date'), Qt.DateFormat.ISODate)
                     self.date_edit.setDate(dt.date())
-                except:
+                except Exception:
                     pass
         elif rec_type == 'daily':
             combo_index = 1
@@ -2183,6 +2375,27 @@ class ScheduleDialog(QDialog):
         is_once = (combo_index == 0)
         self.date_label.setVisible(is_once)
         self.date_edit.setVisible(is_once)
+
+        join_profile = data.get('join_profile', {}) or {}
+        mode_priority = join_profile.get('mode_priority', DEFAULT_JOIN_PROFILE['mode_priority'])
+        mode_priority = [str(m).lower() for m in mode_priority]
+        combo_join_index = 0
+        for idx, (_, modes) in enumerate(self.join_mode_options):
+            if modes == mode_priority:
+                combo_join_index = idx
+                break
+        self.join_mode_combo.setCurrentIndex(combo_join_index)
+
+        retry_policy = data.get('retry_policy', {}) or {}
+        try:
+            self.retry_attempts_spin.setValue(int(retry_policy.get('max_attempts', DEFAULT_RETRY_POLICY['max_attempts'])))
+        except Exception:
+            self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY['max_attempts'])
+        try:
+            self.retry_delay_spin.setValue(int(retry_policy.get('delay_seconds', DEFAULT_RETRY_POLICY['delay_seconds'])))
+        except Exception:
+            self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY['delay_seconds'])
+        self.fallback_checkbox.setChecked(bool(retry_policy.get('fallback_enabled', DEFAULT_RETRY_POLICY['fallback_enabled'])))
 
 class ZoomAutoApp(QMainWindow):
     """Ứng dụng chính"""
@@ -2900,7 +3113,9 @@ class ZoomAutoApp(QMainWindow):
                 True,
                 data['name'], # Thêm tên lịch
                 recurrence=data['recurrence'],
-                zoom_link=data['zoom_link']
+                zoom_link=data['zoom_link'],
+                join_profile=data.get('join_profile'),
+                retry_policy=data.get('retry_policy'),
             )
             if new_job_id:
                 self.save_schedules() # Lưu ngay
@@ -3104,6 +3319,16 @@ class ZoomAutoApp(QMainWindow):
         self.detail_recurrence = QLabel()
         self.detail_recurrence.setObjectName("detailValue")
         form_layout.addRow(QLabel("Lặp lại:", objectName="detailLabel"), self.detail_recurrence)
+
+        self.detail_join_profile = QLabel()
+        self.detail_join_profile.setObjectName("detailValue")
+        self.detail_join_profile.setWordWrap(True)
+        form_layout.addRow(QLabel("Join profile:", objectName="detailLabel"), self.detail_join_profile)
+
+        self.detail_last_run = QLabel()
+        self.detail_last_run.setObjectName("detailValue")
+        self.detail_last_run.setWordWrap(True)
+        form_layout.addRow(QLabel("Lần chạy gần nhất:", objectName="detailLabel"), self.detail_last_run)
         
         scroll_inner.addLayout(form_layout)
         scroll_inner.addStretch()
@@ -3222,9 +3447,36 @@ class ZoomAutoApp(QMainWindow):
                 days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
                 display_str = f"Mỗi {interval} tuần vào: {days}"
             else:
-                display_str = f"Mỗi {interval} {unit}"
+                display_str = f"Má»—i {interval} {unit}"
         
         self.detail_recurrence.setText(display_str)
+
+        join_profile = job_data.get("join_profile") or DEFAULT_JOIN_PROFILE
+        retry_policy = job_data.get("retry_policy") or DEFAULT_RETRY_POLICY
+        modes = " -> ".join([m.upper() for m in join_profile.get("mode_priority", DEFAULT_JOIN_PROFILE["mode_priority"])])
+        retry_text = f"Retry {retry_policy.get('max_attempts', 1)} lần, trễ {retry_policy.get('delay_seconds', 0)}s"
+        fallback_text = "Fallback bật" if retry_policy.get("fallback_enabled", True) else "Fallback tắt"
+        self.detail_join_profile.setText(f"{modes}\n{retry_text} • {fallback_text}")
+
+        last_meta = job_data.get("last_run_meta") or {}
+        if not last_meta:
+            self.detail_last_run.setText("Chưa chạy")
+        else:
+            last_status = last_meta.get("last_status", "unknown")
+            last_time = last_meta.get("last_run_time", "")
+            try:
+                dt = datetime.fromisoformat(last_time)
+                time_text = dt.strftime("%d/%m/%Y %H:%M:%S")
+            except Exception:
+                time_text = last_time or "Không rõ"
+            if last_status == "success":
+                mode = (last_meta.get("last_mode") or "").upper()
+                attempt = last_meta.get("last_attempt_count", 0)
+                self.detail_last_run.setText(f"Thành công lúc {time_text}\nMode: {mode} • Attempt: {attempt}")
+            else:
+                code = last_meta.get("last_error_code", "UNKNOWN_ERROR")
+                msg = last_meta.get("last_error_message", "Không có chi tiết")
+                self.detail_last_run.setText(f"Thất bại lúc {time_text}\n{code}: {msg}")
 
     def join_selected_schedule(self):
         """Mở phòng Zoom của lịch đang chọn ngay lập tức"""
@@ -3244,8 +3496,15 @@ class ZoomAutoApp(QMainWindow):
                 "Vui lòng chỉnh sửa để thêm thông tin kết nối.")
             return
         
-        self.scheduler._open_zoom(meeting_id, password, zoom_link)
-        self.show_message(f"🚀 Đã mở Zoom: {name}")
+        ok = self.scheduler.run_job_now(self.current_selected_job_id)
+        if ok:
+            self.show_message(f"🚀 Đã mở Zoom: {name}")
+        else:
+            updated = self.scheduler.get_all_jobs().get(self.current_selected_job_id, {})
+            meta = updated.get("last_run_meta", {})
+            reason = meta.get("last_error_message") or "Không rõ nguyên nhân"
+            self.show_message(f"✗ Không mở được Zoom: {reason}")
+            self.update_detail_pane(updated or job_data)
 
     def edit_selected_schedule(self):
         """Chỉnh sửa lịch đã chọn"""
@@ -3299,7 +3558,10 @@ class ZoomAutoApp(QMainWindow):
                 job_data.get('enabled', True),
                 new_data['name'],
                 recurrence=new_data['recurrence'],
-                zoom_link=new_data['zoom_link']
+                zoom_link=new_data['zoom_link'],
+                join_profile=new_data.get('join_profile'),
+                retry_policy=new_data.get('retry_policy'),
+                last_run_meta=job_data.get('last_run_meta'),
             )
             self.save_schedules()
             self.refresh_table()
@@ -3336,13 +3598,15 @@ class ZoomAutoApp(QMainWindow):
         new_name = f"{job_data.get('name', '')} (Bản sao)"
         
         new_job_id = self.scheduler.add_schedule(
-            None, # ID mới
+            None, # ID má»›i
             job_data['hour'], job_data['minute'],
             job_data['meeting_id'], job_data['password'],
             job_data.get('enabled', True),
             new_name,
             recurrence=job_data.get('recurrence'),
-            zoom_link=job_data.get('zoom_link')
+            zoom_link=job_data.get('zoom_link'),
+            join_profile=job_data.get('join_profile'),
+            retry_policy=job_data.get('retry_policy'),
         )
         if new_job_id:
             self.save_schedules()
@@ -3423,11 +3687,12 @@ class ZoomAutoApp(QMainWindow):
                     try:
                         dt = datetime.fromisoformat(run_date)
                         display_str = dt.strftime("%d/%m %H:%M")
-                    except: pass
+                    except Exception:
+                        pass
             
             # Đánh dấu ▶ cho lịch sắp chạy
             if is_next:
-                display_str = f"▶ {display_str}"
+                display_str = f"â–¶ {display_str}"
             
             item_time = QTableWidgetItem(display_str)
             item_time.setData(Qt.ItemDataRole.UserRole, job_id)
@@ -3467,7 +3732,7 @@ class ZoomAutoApp(QMainWindow):
                 name_item.setForeground(NORMAL_TEXT)
             self.table.setItem(idx, 2, name_item)
             
-            # --- Cột 3: Indicator Link/ID ---
+            # --- Cá»™t 3: Indicator Link/ID ---
             if zoom_link:
                 indicator_item = QTableWidgetItem("🔗")
                 indicator_item.setToolTip(f"Có Link Zoom\n{zoom_link[:80]}..." if len(zoom_link) > 80 else f"Có Link Zoom\n{zoom_link}")
@@ -3490,7 +3755,7 @@ class ZoomAutoApp(QMainWindow):
                     try:
                         dt_rec = datetime.fromisoformat(run_date)
                         rec_display = dt_rec.strftime("%d/%m/%Y")
-                    except:
+                    except Exception:
                         rec_display = "Một lần"
                 else:
                     rec_display = "Một lần"
@@ -3508,7 +3773,7 @@ class ZoomAutoApp(QMainWindow):
                     days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
                     rec_display = f"{interval}w: {days}" if days else f"Mỗi {interval} tuần"
                 else:
-                    rec_display = f"Mỗi {interval} {unit}"
+                    rec_display = f"Má»—i {interval} {unit}"
             
             rec_item = QTableWidgetItem(rec_display)
             if is_next:
@@ -3540,7 +3805,7 @@ class ZoomAutoApp(QMainWindow):
                 except Exception:
                     pass
 
-        return f"▶ {display_str}" if is_next else display_str
+        return f"â–¶ {display_str}" if is_next else display_str
 
     def _find_row_by_job_id(self, job_id):
         if not job_id:
@@ -3571,7 +3836,7 @@ class ZoomAutoApp(QMainWindow):
         disabled_text = QColor("#94a3b8")
         normal_text = QColor("#0f172a")
 
-        # Cột 0: checkbox cell widget
+        # Cá»™t 0: checkbox cell widget
         cell_widget = self.table.cellWidget(row, 0)
         if cell_widget:
             if is_next:
@@ -3615,7 +3880,7 @@ class ZoomAutoApp(QMainWindow):
                 else:
                     name_item.setForeground(normal_text)
 
-        # Cột 3: indicator
+        # Cá»™t 3: indicator
         indicator_item = self.table.item(row, 3)
         if indicator_item:
             if is_next:
@@ -3775,7 +4040,10 @@ class ZoomAutoApp(QMainWindow):
                         data.get('enabled', True),
                         data.get('name', ''),
                         recurrence=data.get('recurrence'),
-                        zoom_link=data.get('zoom_link', '')
+                        zoom_link=data.get('zoom_link', ''),
+                        join_profile=data.get('join_profile'),
+                        retry_policy=data.get('retry_policy'),
+                        last_run_meta=data.get('last_run_meta'),
                     )
         except json.JSONDecodeError:
             self.show_message(f"✗ Lỗi: Tệp zoom_schedule.json bị hỏng.")
@@ -3812,6 +4080,16 @@ class ZoomAutoApp(QMainWindow):
         super().closeEvent(event)
     
 def main():
+    init_sentry()
+
+    def _global_excepthook(exc_type, exc_value, exc_traceback):
+        try:
+            report_error_to_sentry(exc_value, {"where": "global_excepthook"})
+        except Exception:
+            pass
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = _global_excepthook
     app = QApplication(sys.argv)
     window = ZoomAutoApp()
     window.show()

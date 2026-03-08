@@ -22,5 +22,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# App data
+# App data (sensitive - user schedules and settings)
 zoom_schedule.json
+settings.json

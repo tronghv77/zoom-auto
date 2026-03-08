@@ -1,9 +1,15 @@
+import sys
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 from main import SchedulerManager
 from datetime import datetime, timedelta
 import uuid
 import updater
+
+# Fix UTF-8 output for Windows terminals
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 class TestZoomScheduler(unittest.TestCase):
     def setUp(self):
@@ -206,6 +212,153 @@ class TestZoomScheduler(unittest.TestCase):
         # The current implementation will run it every week on Sat/Sun.
         # This is a limitation of the current app logic, not the test.
         print("   -> [PASS]")
+
+class TestJoinOpenError(unittest.TestCase):
+    """Tests cho JoinOpenError exception class"""
+
+    def test_error_has_code_and_message(self):
+        """JoinOpenError phải lưu code và message riêng biệt"""
+        from main import JoinOpenError
+        err = JoinOpenError("APP_NOT_INSTALLED", "Zoom app không tìm thấy")
+        self.assertEqual(err.code, "APP_NOT_INSTALLED")
+        self.assertEqual(err.message, "Zoom app không tìm thấy")
+        self.assertEqual(str(err), "Zoom app không tìm thấy")
+
+    def test_error_is_exception(self):
+        """JoinOpenError phải kế thừa từ Exception"""
+        from main import JoinOpenError
+        err = JoinOpenError("INVALID_MEETING_ID", "Thiếu Meeting ID")
+        self.assertIsInstance(err, Exception)
+
+
+class TestOpenZoomLogic(unittest.TestCase):
+    """Tests cho retry/fallback logic trong _open_zoom"""
+
+    def setUp(self):
+        self.mock_callback = MagicMock()
+        self.manager = SchedulerManager(callback=self.mock_callback)
+        self.manager.scheduler.shutdown()
+        self.manager.scheduler = MagicMock()
+        self.manager.jobs = {}
+
+    def _add_test_job(self, job_id="test-job", meeting_id="123456789",
+                      join_profile=None, retry_policy=None):
+        from main import DEFAULT_JOIN_PROFILE, DEFAULT_RETRY_POLICY
+        self.manager.jobs[job_id] = {
+            "id": job_id,
+            "name": "Test Meeting",
+            "meeting_id": meeting_id,
+            "password": "pass",
+            "zoom_link": "",
+            "join_profile": join_profile or dict(DEFAULT_JOIN_PROFILE),
+            "retry_policy": retry_policy or dict(DEFAULT_RETRY_POLICY),
+            "last_run_meta": {},
+        }
+
+    def test_open_zoom_success_app_mode(self):
+        """Mở Zoom thành công qua App mode"""
+        print("\n[TEST 12] Kiểm tra mở Zoom thành công (App mode)")
+        self._add_test_job()
+
+        with patch("main.os.startfile") as mock_startfile:
+            result = self.manager._open_zoom("test-job", "123456789", "pass", "")
+
+        self.assertTrue(result)
+        mock_startfile.assert_called_once()
+        print("   -> [PASS]")
+
+    def test_open_zoom_fallback_to_browser(self):
+        """Fallback từ App sang Browser khi App thất bại"""
+        print("\n[TEST 13] Kiểm tra fallback App -> Browser")
+        self._add_test_job(
+            retry_policy={"max_attempts": 1, "delay_seconds": 0, "fallback_enabled": True}
+        )
+
+        with patch("main.os.startfile", side_effect=Exception("App not found")):
+            with patch("main.webbrowser.open", return_value=True) as mock_browser:
+                result = self.manager._open_zoom("test-job", "123456789", "pass", "")
+
+        self.assertTrue(result)
+        mock_browser.assert_called_once()
+        print("   -> [PASS]")
+
+    def test_open_zoom_no_fallback(self):
+        """Không fallback khi fallback_enabled=False"""
+        print("\n[TEST 14] Kiểm tra không fallback khi fallback_enabled=False")
+        self._add_test_job(
+            retry_policy={"max_attempts": 1, "delay_seconds": 0, "fallback_enabled": False}
+        )
+
+        with patch("main.os.startfile", side_effect=Exception("App not found")):
+            with patch("main.webbrowser.open", return_value=True) as mock_browser:
+                result = self.manager._open_zoom("test-job", "123456789", "pass", "")
+
+        self.assertFalse(result)
+        mock_browser.assert_not_called()
+        print("   -> [PASS]")
+
+    def test_open_zoom_retry_attempts(self):
+        """Retry đúng số lần khi thất bại"""
+        print("\n[TEST 15] Kiểm tra retry đúng số lần (max_attempts=3)")
+        self._add_test_job(
+            join_profile={"mode_priority": ["app"]},
+            retry_policy={"max_attempts": 3, "delay_seconds": 0, "fallback_enabled": False}
+        )
+
+        with patch("main.os.startfile", side_effect=Exception("fail")) as mock_start:
+            result = self.manager._open_zoom("test-job", "123456789", "pass", "")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_start.call_count, 3)
+        print("   -> [PASS]")
+
+    def test_open_zoom_missing_meeting_id(self):
+        """Trả về False khi thiếu Meeting ID và không có zoom_link"""
+        print("\n[TEST 16] Kiểm tra thiếu Meeting ID")
+        self._add_test_job(meeting_id="")
+        self.manager.jobs["test-job"]["zoom_link"] = ""
+
+        with patch("main.os.startfile", side_effect=Exception("no id")):
+            with patch("main.webbrowser.open", return_value=True):
+                result = self.manager._open_zoom("test-job", "", "", "")
+
+        self.assertFalse(result)
+        print("   -> [PASS]")
+
+
+class TestSentryReporting(unittest.TestCase):
+    """Tests cho report_error_to_sentry"""
+
+    def test_report_skips_when_no_sentry_sdk(self):
+        """Không crash khi sentry_sdk là None"""
+        import main
+        orig = main.sentry_sdk
+        try:
+            main.sentry_sdk = None
+            from main import JoinOpenError
+            # Phải không raise exception
+            main.report_error_to_sentry(JoinOpenError("TEST", "msg"), {"k": "v"})
+        finally:
+            main.sentry_sdk = orig
+
+    def test_report_passes_original_exception(self):
+        """report_error_to_sentry nhận exception gốc, không tạo Exception mới"""
+        import main
+        from main import JoinOpenError
+        captured = []
+        mock_sdk = MagicMock()
+        mock_sdk.push_scope().__enter__ = MagicMock(return_value=MagicMock())
+        mock_sdk.push_scope().__exit__ = MagicMock(return_value=False)
+        mock_sdk.capture_exception.side_effect = lambda e: captured.append(e)
+        orig = main.sentry_sdk
+        try:
+            main.sentry_sdk = mock_sdk
+            err = JoinOpenError("APP_NOT_INSTALLED", "test msg")
+            main.report_error_to_sentry(err, None)
+            mock_sdk.capture_exception.assert_called_once_with(err)
+        finally:
+            main.sentry_sdk = orig
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=0)

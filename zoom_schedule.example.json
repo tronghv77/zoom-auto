@@ -1,0 +1,36 @@
+{
+    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx": {
+        "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "name": "Họp nhóm hàng ngày",
+        "hour": 9,
+        "minute": 0,
+        "meeting_id": "123 456 7890",
+        "password": "abc123",
+        "zoom_link": "",
+        "enabled": true,
+        "recurrence": {
+            "type": "weekdays",
+            "run_date": null,
+            "details": {
+                "days_of_week": [0, 1, 2, 3, 4]
+            }
+        }
+    },
+    "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy": {
+        "id": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
+        "name": "Standup thứ Hai & Thứ Tư",
+        "hour": 8,
+        "minute": 30,
+        "meeting_id": "987 654 3210",
+        "password": "",
+        "zoom_link": "https://us06web.zoom.us/j/9876543210",
+        "enabled": false,
+        "recurrence": {
+            "type": "weekly",
+            "run_date": null,
+            "details": {
+                "days_of_week": [0, 2]
+            }
+        }
+    }
+}
