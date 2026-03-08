@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -176,21 +177,26 @@ setlocal enableextensions
 set CURR="{str(current_exe)}"
 set NEW="{str(new_exe)}"
 set PID={os.getpid()}
+set /a WAIT=0
 
 :waitloop
 timeout /t 1 /nobreak >nul
-tasklist /fi "PID eq %PID%" | find "%PID%" >nul
+set /a WAIT+=1
+if %WAIT% GEQ 120 goto apply
+tasklist /fi "PID eq %PID%" 2>nul | findstr /r /c:" %PID% " >nul
 if %ERRORLEVEL%==0 goto waitloop
 
+:apply
 copy /y %NEW% %CURR% >nul
 if %ERRORLEVEL% NEQ 0 (
-  echo Failed to replace file.
-  exit /b 1
+  del /q %NEW% >nul 2>&1
+  exit /b 0
 )
 
 start "" %CURR%
 del /q %NEW% >nul 2>&1
 start "" cmd /c del /q "%~f0" >nul 2>&1
+exit /b 0
 """
     with open(bat, "w", encoding="utf-8") as f:
         f.write(content)
@@ -203,7 +209,11 @@ def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
     current_exe = Path(sys.executable)
     bat = _write_apply_batch(current_exe, downloaded_file)
     try:
-        os.startfile(str(bat))  # Launch the batch (non-blocking)
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(bat)],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            close_fds=True,
+        )
         return True, None
     except Exception as e:
         return False, str(e)

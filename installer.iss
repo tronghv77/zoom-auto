@@ -1,8 +1,8 @@
-; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 1.1.0
+﻿; Inno Setup Script for Zoom Auto Scheduler
+; Generated for version 1.1.1
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
@@ -40,7 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 0,6.1
-Name: "startupmenu"; Description: "Chạy tự động khi khởi động máy"; GroupDescription: "Khởi động"
+Name: "startupmenu"; Description: "Cháº¡y tá»± Ä‘á»™ng khi khá»Ÿi Ä‘á»™ng mÃ¡y"; GroupDescription: "Khá»Ÿi Ä‘á»™ng"
 
 [Files]
 Source: "{#SourceDir}\ZoomAuto\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -48,12 +48,12 @@ Source: "{#SourceDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
-Name: "{group}\Dỡ cài đặt {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\Dá»¡ cÃ i Ä‘áº·t {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\app.ico"
 Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon; IconFilename: "{app}\app.ico"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Chạy {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Cháº¡y {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Registry]
 ; Startup task for "Run on startup" option
@@ -63,5 +63,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 Type: filesandordirs; Name: "{app}\*"
 
 [UninstallDelete]
-; Chỉ xóa file log, giữ lại dữ liệu lịch (zoom_schedule.json)
+; Chá»‰ xÃ³a file log, giá»¯ láº¡i dá»¯ liá»‡u lá»‹ch (zoom_schedule.json)
 Type: files; Name: "{localappdata}\ZoomAuto\zoom_auto.log"

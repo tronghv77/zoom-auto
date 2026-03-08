@@ -11,17 +11,65 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Step 1: Building EXE with PyInstaller..." -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$specFile = "D:\Projects\zoom-auto\ZoomAuto.spec"
+$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$specFile = Join-Path $projectRoot "ZoomAuto.spec"
+$requirementsFile = Join-Path $projectRoot "requirements.txt"
+
+# Prefer project .venv to avoid building with missing dependencies
+$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+$venvPyInstaller = Join-Path $projectRoot ".venv\Scripts\pyinstaller.exe"
+
+if (Test-Path $venvPython) {
+    $pythonExe = $venvPython
+    Write-Host "Using virtual environment: $venvPython" -ForegroundColor Green
+} else {
+    $pythonExe = "python"
+    Write-Host "Warning: .venv not found, using system Python." -ForegroundColor Yellow
+}
+
 if (-not (Test-Path $specFile)) {
     Write-Host "Error: ZoomAuto.spec not found!" -ForegroundColor Red
     exit 1
 }
 
-# Run PyInstaller
-pyinstaller --clean --noconfirm $specFile
+# Ensure required dependencies are available in build environment
+Write-Host "Checking build dependencies..." -ForegroundColor Cyan
+& $pythonExe -c "import PyQt6, apscheduler, requests, sentry_sdk" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-Path $requirementsFile)) {
+        Write-Host "Error: requirements.txt not found at $requirementsFile" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Installing requirements into build environment..." -ForegroundColor Yellow
+    & $pythonExe -m pip install -r $requirementsFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Error: Failed to install requirements." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Run PyInstaller (prefer .venv executable)
+if (Test-Path $venvPyInstaller) {
+    & $venvPyInstaller --clean --noconfirm $specFile
+} else {
+    & $pythonExe -m PyInstaller --clean --noconfirm $specFile
+}
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: PyInstaller build failed!" -ForegroundColor Red
     exit 1
+}
+
+# Fail fast if critical runtime modules are not bundled
+$warnFile = Join-Path $projectRoot "build\ZoomAuto\warn-ZoomAuto.txt"
+if (Test-Path $warnFile) {
+    $warn = Get-Content $warnFile -Raw
+    if ($warn -match "missing module named 'PyQt6\.QtCore'" -or
+        $warn -match "missing module named 'PyQt6\.QtGui'" -or
+        $warn -match "missing module named 'PyQt6\.QtWidgets'" -or
+        $warn -match "missing module named apscheduler") {
+        Write-Host "Error: Critical modules missing in PyInstaller analysis. Aborting release build." -ForegroundColor Red
+        exit 1
+    }
 }
 Write-Host "EXE built successfully!" -ForegroundColor Green
 Write-Host ""
@@ -56,8 +104,8 @@ if (-not $isccPath) {
 }
 
 # Compile installer
-$issFile = "D:\Projects\zoom-auto\installer.iss"
-$outputDir = "D:\Projects\zoom-auto\dist"
+$issFile = Join-Path $projectRoot "installer.iss"
+$outputDir = Join-Path $projectRoot "dist"
 
 if (-not (Test-Path $issFile)) {
     Write-Host "Error: installer.iss not found at $issFile" -ForegroundColor Red
