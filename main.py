@@ -543,7 +543,7 @@ class CustomRecurrenceDialog(QDialog):
         else:
             self.radio_never.setChecked(True)
 
-from PyQt6.QtGui import QIcon, QColor, QAction
+from PyQt6.QtGui import QIcon, QColor, QAction, QPalette
 from apscheduler.schedulers.background import BackgroundScheduler
 import webbrowser
 import subprocess
@@ -2200,6 +2200,8 @@ class ZoomAutoApp(QMainWindow):
         self.scheduler = SchedulerManager(callback=self.show_message, parent_window=self)
         self.tray_icon = None
         self.exit_requested = False
+        self.last_next_job_id = None
+        self.row_by_job_id = {}
         # Tạo UI trước
         self.init_ui()
         # Tải lịch SAU khi UI sẵn sàng
@@ -2210,9 +2212,9 @@ class ZoomAutoApp(QMainWindow):
         
         # Timer tự động cập nhật status bar (mỗi 30 giây)
         self.status_timer = QTimer(self)
-        self.status_timer.timeout.connect(self.update_next_run_status)
+        self.status_timer.timeout.connect(self.sync_next_run_ui)
         self.status_timer.start(30000)  # 30 giây
-        self.update_next_run_status()  # Cập nhật ngay lần đầu
+        self.sync_next_run_ui()  # Cập nhật ngay lần đầu
     
     def init_ui(self):
         """Khởi tạo giao diện"""
@@ -2291,12 +2293,14 @@ class ZoomAutoApp(QMainWindow):
                 border-radius: 10px;
                 gridline-color: #e2e8f0;
                 selection-background-color: #dbeafe;
+                selection-color: #0f172a;
                 font-size: 13px;
             }
             
             QTableWidget::item {
                 padding: 8px;
                 border-bottom: 1px solid #f1f5f9;
+                color: #0f172a;
             }
             
             QTableWidget::item:selected {
@@ -3350,21 +3354,26 @@ class ZoomAutoApp(QMainWindow):
     def find_and_select_row(self, job_id):
         """Tìm và chọn dòng trong bảng dựa trên job_id"""
         if not job_id: return
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)  # job_id lưu ở cột 1 (THỜI GIAN)
-            if item and item.data(Qt.ItemDataRole.UserRole) == job_id:
-                self.table.selectRow(row)
-                self.table.scrollToItem(item, QTableWidget.ScrollHint.PositionAtCenter)
-                break
+        row = self.row_by_job_id.get(job_id, -1)
+        if row < 0:
+            row = self._find_row_by_job_id(job_id)
+        if row < 0:
+            return
+        item = self.table.item(row, 1)
+        self.table.selectRow(row)
+        if item:
+            self.table.scrollToItem(item, QTableWidget.ScrollHint.PositionAtCenter)
 
     def refresh_table(self):
         """Cập nhật bảng"""
         self.table.setRowCount(0)
+        self.row_by_job_id.clear()
         jobs = self.scheduler.get_all_jobs()
         
         # Lấy job_id của lịch sắp chạy tiếp theo
         next_run = self.scheduler.get_next_run_info()
         next_job_id = next_run[0] if next_run else None
+        self.last_next_job_id = next_job_id
         
         # Sắp xếp công việc theo giờ và phút
         sorted_jobs = sorted(jobs.items(), key=lambda item: (item[1]['hour'], item[1]['minute']))
@@ -3373,9 +3382,11 @@ class ZoomAutoApp(QMainWindow):
         NEXT_RUN_BG = QColor("#fffbeb")       # Amber-50
         NEXT_RUN_TEXT = QColor("#92400e")      # Amber-800
         DISABLED_TEXT = QColor("#94a3b8")      # Slate-400
+        NORMAL_TEXT = QColor("#0f172a")        # Slate-900
 
         for idx, (job_id, job_data) in enumerate(sorted_jobs):
             self.table.insertRow(idx)
+            self.row_by_job_id[job_id] = idx
             is_next = (job_id == next_job_id)
             is_enabled = job_data.get('enabled', False)
 
@@ -3389,7 +3400,10 @@ class ZoomAutoApp(QMainWindow):
             
             cell_widget = QWidget()
             if is_next:
-                cell_widget.setStyleSheet(f"background-color: {NEXT_RUN_BG.name()};")
+                cell_widget.setAutoFillBackground(True)
+                cell_palette = cell_widget.palette()
+                cell_palette.setColor(QPalette.ColorRole.Window, NEXT_RUN_BG)
+                cell_widget.setPalette(cell_palette)
             layout = QHBoxLayout(cell_widget)
             layout.addWidget(toggle_switch)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3425,6 +3439,8 @@ class ZoomAutoApp(QMainWindow):
                 item_time.setFont(font)
             elif not is_enabled:
                 item_time.setForeground(DISABLED_TEXT)
+            else:
+                item_time.setForeground(NORMAL_TEXT)
             self.table.setItem(idx, 1, item_time)
             
             # --- Cột 2: Tên phòng Zoom ---
@@ -3447,6 +3463,8 @@ class ZoomAutoApp(QMainWindow):
                 name_item.setFont(font)
             elif not is_enabled:
                 name_item.setForeground(DISABLED_TEXT)
+            else:
+                name_item.setForeground(NORMAL_TEXT)
             self.table.setItem(idx, 2, name_item)
             
             # --- Cột 3: Indicator Link/ID ---
@@ -3498,10 +3516,148 @@ class ZoomAutoApp(QMainWindow):
                 rec_item.setForeground(NEXT_RUN_TEXT)
             elif not is_enabled:
                 rec_item.setForeground(DISABLED_TEXT)
+            else:
+                rec_item.setForeground(NORMAL_TEXT)
             self.table.setItem(idx, 4, rec_item)
         
         self.table.resizeRowsToContents()
         self.update_tray_tooltip()
+        self.update_next_run_status()
+
+    def _format_job_time_display(self, job_data, is_next=False):
+        """Tạo text hiển thị cột thời gian cho 1 lịch."""
+        rec = job_data.get('recurrence', {})
+        rec_type = rec.get('type', 'daily')
+        hour, minute = job_data.get('hour', 0), job_data.get('minute', 0)
+        display_str = f"{hour:02d}:{minute:02d}"
+
+        if rec_type == 'once':
+            run_date = rec.get('run_date')
+            if run_date:
+                try:
+                    dt = datetime.fromisoformat(run_date)
+                    display_str = dt.strftime("%d/%m %H:%M")
+                except Exception:
+                    pass
+
+        return f"▶ {display_str}" if is_next else display_str
+
+    def _find_row_by_job_id(self, job_id):
+        if not job_id:
+            return -1
+        cached_row = self.row_by_job_id.get(job_id, -1)
+        if cached_row >= 0:
+            return cached_row
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            if item and item.data(Qt.ItemDataRole.UserRole) == job_id:
+                self.row_by_job_id[job_id] = row
+                return row
+        return -1
+
+    def _apply_next_run_state_to_row(self, row, job_id, is_next):
+        """Áp style highlight next-run cho một dòng mà không rebuild toàn bảng."""
+        if row < 0:
+            return
+
+        jobs = self.scheduler.get_all_jobs()
+        job_data = jobs.get(job_id)
+        if not job_data:
+            return
+
+        is_enabled = job_data.get('enabled', False)
+        next_run_bg = QColor("#fffbeb")
+        next_run_text = QColor("#92400e")
+        disabled_text = QColor("#94a3b8")
+        normal_text = QColor("#0f172a")
+
+        # Cột 0: checkbox cell widget
+        cell_widget = self.table.cellWidget(row, 0)
+        if cell_widget:
+            if is_next:
+                cell_widget.setAutoFillBackground(True)
+                cell_palette = cell_widget.palette()
+                cell_palette.setColor(QPalette.ColorRole.Window, next_run_bg)
+                cell_widget.setPalette(cell_palette)
+            else:
+                cell_widget.setAutoFillBackground(False)
+
+        # Cột 1: thời gian (thêm/bỏ dấu ▶)
+        time_item = self.table.item(row, 1)
+        if time_item:
+            time_item.setText(self._format_job_time_display(job_data, is_next=is_next))
+            font = time_item.font()
+            font.setBold(is_next)
+            time_item.setFont(font)
+            if is_next:
+                time_item.setBackground(next_run_bg)
+                time_item.setForeground(next_run_text)
+            else:
+                time_item.setData(Qt.ItemDataRole.BackgroundRole, None)
+                if not is_enabled:
+                    time_item.setForeground(disabled_text)
+                else:
+                    time_item.setForeground(normal_text)
+
+        # Cột 2: tên phòng
+        name_item = self.table.item(row, 2)
+        if name_item:
+            font = name_item.font()
+            font.setBold(is_next)
+            name_item.setFont(font)
+            if is_next:
+                name_item.setBackground(next_run_bg)
+                name_item.setForeground(next_run_text)
+            else:
+                name_item.setData(Qt.ItemDataRole.BackgroundRole, None)
+                if not is_enabled:
+                    name_item.setForeground(disabled_text)
+                else:
+                    name_item.setForeground(normal_text)
+
+        # Cột 3: indicator
+        indicator_item = self.table.item(row, 3)
+        if indicator_item:
+            if is_next:
+                indicator_item.setBackground(next_run_bg)
+            else:
+                indicator_item.setData(Qt.ItemDataRole.BackgroundRole, None)
+
+        # Cột 4: lặp lại
+        rec_item = self.table.item(row, 4)
+        if rec_item:
+            if is_next:
+                rec_item.setBackground(next_run_bg)
+                rec_item.setForeground(next_run_text)
+            else:
+                rec_item.setData(Qt.ItemDataRole.BackgroundRole, None)
+                if not is_enabled:
+                    rec_item.setForeground(disabled_text)
+                else:
+                    rec_item.setForeground(normal_text)
+
+    def sync_next_run_ui(self):
+        """Đồng bộ trạng thái + highlight lịch sắp chạy theo thay đổi thời gian."""
+        next_info = self.scheduler.get_next_run_info()
+        next_job_id = next_info[0] if next_info else None
+
+        if next_job_id != self.last_next_job_id:
+            old_row = self._find_row_by_job_id(self.last_next_job_id)
+            new_row = self._find_row_by_job_id(next_job_id)
+
+            # Nếu bảng chưa đồng bộ dữ liệu thì fallback refresh toàn bảng
+            if (self.last_next_job_id and old_row < 0) or (next_job_id and new_row < 0):
+                selected_job_id = self.current_selected_job_id
+                self.refresh_table()
+                if selected_job_id:
+                    self.find_and_select_row(selected_job_id)
+                return
+
+            self._apply_next_run_state_to_row(old_row, self.last_next_job_id, False)
+            self._apply_next_run_state_to_row(new_row, next_job_id, True)
+            self.last_next_job_id = next_job_id
+            self.update_tray_tooltip()
+
         self.update_next_run_status()
 
     def update_next_run_status(self):

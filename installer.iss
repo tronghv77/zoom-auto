@@ -1,8 +1,8 @@
 ; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 1.0.0
+; Generated for version 1.0.1
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
@@ -27,6 +27,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ChangesAssociations=no
+SetupIconFile=dist\app.ico
+UninstallDisplayIcon={app}\app.ico
 ; Auto close running application before update
 CloseApplications=yes
 CloseApplicationsFilter=*.exe
@@ -61,4 +63,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 Type: filesandordirs; Name: "{app}\*"
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{localappdata}\ZoomAuto"
+; Chỉ xóa file log, giữ lại dữ liệu lịch (zoom_schedule.json)
+Type: files; Name: "{localappdata}\ZoomAuto\zoom_auto.log"
