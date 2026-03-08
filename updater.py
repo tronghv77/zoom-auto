@@ -168,36 +168,55 @@ def sha256sum(path: Path) -> str:
     return h.hexdigest()
 
 
+def _hidden_popen(args, **kwargs) -> subprocess.Popen:
+    """Launch a subprocess with no visible console window on Windows."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return subprocess.Popen(
+        args,
+        startupinfo=si,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        **kwargs,
+    )
+
+
 def _write_apply_batch(current_exe: Path, new_exe: Path) -> Path:
-    # Create a temporary .bat to replace the exe after this process exits
+    """Create a temp .bat that waits for this process to exit, copies new exe, then restarts."""
     bat = Path(tempfile.gettempdir()) / f"apply_update_{int(time.time())}.bat"
-    content = f"""
-@echo off
-setlocal enableextensions
-set CURR="{str(current_exe)}"
-set NEW="{str(new_exe)}"
-set PID={os.getpid()}
-set /a WAIT=0
-
-:waitloop
-timeout /t 1 /nobreak >nul
-set /a WAIT+=1
-if %WAIT% GEQ 120 goto apply
-tasklist /fi "PID eq %PID%" 2>nul | findstr /r /c:" %PID% " >nul
-if %ERRORLEVEL%==0 goto waitloop
-
-:apply
-copy /y %NEW% %CURR% >nul
-if %ERRORLEVEL% NEQ 0 (
-  del /q %NEW% >nul 2>&1
-  exit /b 0
-)
-
-start "" %CURR%
-del /q %NEW% >nul 2>&1
-start "" cmd /c del /q "%~f0" >nul 2>&1
-exit /b 0
-"""
+    pid = os.getpid()
+    # Use quoted paths to handle spaces; ping instead of timeout (more reliable on all Windows)
+    content = (
+        "@echo off\r\n"
+        "setlocal enableextensions\r\n"
+        f"set CURR=\"{str(current_exe)}\"\r\n"
+        f"set NEW=\"{str(new_exe)}\"\r\n"
+        f"set PID={pid}\r\n"
+        "set /a WAIT=0\r\n"
+        "\r\n"
+        ":waitloop\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        "set /a WAIT+=1\r\n"
+        "if %WAIT% GEQ 60 goto apply\r\n"
+        f"tasklist /fi \"PID eq {pid}\" /fo csv 2>nul | find \",\\\"{pid}\\\"\" >nul\r\n"
+        "if %ERRORLEVEL%==0 goto waitloop\r\n"
+        "\r\n"
+        ":apply\r\n"
+        "copy /y %NEW% %CURR% >nul 2>&1\r\n"
+        "if %ERRORLEVEL% NEQ 0 (\r\n"
+        "  del /q %NEW% >nul 2>&1\r\n"
+        "  exit /b 1\r\n"
+        ")\r\n"
+        "\r\n"
+        "start \"\" %CURR%\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        "del /q %NEW% >nul 2>&1\r\n"
+        "(goto) 2>nul & del /q \"%~f0\"\r\n"  # self-delete without spawning new window
+    )
     with open(bat, "w", encoding="utf-8") as f:
         f.write(content)
     return bat
@@ -205,29 +224,26 @@ exit /b 0
 
 def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
     if not getattr(sys, "frozen", False):
-        return False, "Ch? h? tr? t? c?p nh?t cho b?n ??ng g?i (.exe)."
+        return False, "Chỉ hỗ trợ tự cập nhật cho bản đóng gói (.exe)."
 
-    # Preferred path: release payload is installer .exe.
-    # Run installer directly to avoid cmd/batch window.
+    # Installer path: run Inno Setup silently, no window, no restart prompt
     if downloaded_file.suffix.lower() == ".exe":
         try:
-            subprocess.Popen(
-                [str(downloaded_file), "/CLOSEAPPLICATIONS", "/NORESTART"],
-                close_fds=True,
-            )
+            _hidden_popen([
+                str(downloaded_file),
+                "/VERYSILENT",
+                "/NORESTART",
+                "/CLOSEAPPLICATIONS",
+            ])
             return True, None
         except Exception as e:
             return False, str(e)
 
-    # Fallback path for non-installer payloads.
+    # Fallback: batch script to swap portable exe after process exits
     current_exe = Path(sys.executable)
     bat = _write_apply_batch(current_exe, downloaded_file)
     try:
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(bat)],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            close_fds=True,
-        )
+        _hidden_popen(["cmd.exe", "/c", str(bat)])
         return True, None
     except Exception as e:
         return False, str(e)
