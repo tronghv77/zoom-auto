@@ -2022,7 +2022,7 @@ class ScheduleDialog(QDialog):
         label_name = QLabel("Tên phòng Zoom <font color='#dc2626'>*</font>:")
         layout.addRow(label_name, self.name_input)
         
-        # Link Zoom (Má»›i)
+        # Link Zoom (Mới)
         self.link_input = QLineEdit()
         self.link_input.setPlaceholderText("https://us06web.zoom.us/j/...")
         self.link_input.setToolTip("Nhập link Zoom trực tiếp (nếu có)")
@@ -3447,8 +3447,8 @@ class ZoomAutoApp(QMainWindow):
                 days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
                 display_str = f"Mỗi {interval} tuần vào: {days}"
             else:
-                display_str = f"Má»—i {interval} {unit}"
-        
+                display_str = f"Mỗi {interval} {unit}"
+
         self.detail_recurrence.setText(display_str)
 
         join_profile = job_data.get("join_profile") or DEFAULT_JOIN_PROFILE
@@ -3598,7 +3598,7 @@ class ZoomAutoApp(QMainWindow):
         new_name = f"{job_data.get('name', '')} (Bản sao)"
         
         new_job_id = self.scheduler.add_schedule(
-            None, # ID má»›i
+            None, # ID mới
             job_data['hour'], job_data['minute'],
             job_data['meeting_id'], job_data['password'],
             job_data.get('enabled', True),
@@ -3692,8 +3692,8 @@ class ZoomAutoApp(QMainWindow):
             
             # Đánh dấu ▶ cho lịch sắp chạy
             if is_next:
-                display_str = f"â–¶ {display_str}"
-            
+                display_str = f"▶ {display_str}"
+
             item_time = QTableWidgetItem(display_str)
             item_time.setData(Qt.ItemDataRole.UserRole, job_id)
             if is_next:
@@ -3732,7 +3732,7 @@ class ZoomAutoApp(QMainWindow):
                 name_item.setForeground(NORMAL_TEXT)
             self.table.setItem(idx, 2, name_item)
             
-            # --- Cá»™t 3: Indicator Link/ID ---
+            # --- Cột 3: Indicator Link/ID ---
             if zoom_link:
                 indicator_item = QTableWidgetItem("🔗")
                 indicator_item.setToolTip(f"Có Link Zoom\n{zoom_link[:80]}..." if len(zoom_link) > 80 else f"Có Link Zoom\n{zoom_link}")
@@ -3773,7 +3773,7 @@ class ZoomAutoApp(QMainWindow):
                     days = ", ".join([WEEKDAYS_MAP.get(d, '') for d in details.get('days_of_week', [])])
                     rec_display = f"{interval}w: {days}" if days else f"Mỗi {interval} tuần"
                 else:
-                    rec_display = f"Má»—i {interval} {unit}"
+                    rec_display = f"Mỗi {interval} {unit}"
             
             rec_item = QTableWidgetItem(rec_display)
             if is_next:
@@ -3805,7 +3805,7 @@ class ZoomAutoApp(QMainWindow):
                 except Exception:
                     pass
 
-        return f"â–¶ {display_str}" if is_next else display_str
+        return f"▶ {display_str}" if is_next else display_str
 
     def _find_row_by_job_id(self, job_id):
         if not job_id:
@@ -3836,7 +3836,7 @@ class ZoomAutoApp(QMainWindow):
         disabled_text = QColor("#94a3b8")
         normal_text = QColor("#0f172a")
 
-        # Cá»™t 0: checkbox cell widget
+        # Cột 0: checkbox cell widget
         cell_widget = self.table.cellWidget(row, 0)
         if cell_widget:
             if is_next:
@@ -3880,7 +3880,7 @@ class ZoomAutoApp(QMainWindow):
                 else:
                     name_item.setForeground(normal_text)
 
-        # Cá»™t 3: indicator
+        # Cột 3: indicator
         indicator_item = self.table.item(row, 3)
         if indicator_item:
             if is_next:
