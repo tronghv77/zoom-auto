@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QTimeEdit, QSpinBox, QMessageBox, QDialog, QFormLayout, QCheckBox,
     QHeaderView, QDateTimeEdit, QRadioButton, QButtonGroup, QDateEdit,
     QComboBox, QDialogButtonBox, QSpinBox, QCheckBox, QGroupBox, QScrollArea,
-    QTabWidget, QTextBrowser, QSystemTrayIcon, QMenu, QSizePolicy
+    QTabWidget, QTextBrowser, QSystemTrayIcon, QMenu, QSizePolicy, QFrame
 )
 from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal, QDateTime, QDate, QTimer
 
@@ -2149,42 +2149,103 @@ class ScheduleDialog(QDialog):
         
         layout.addRow(self.date_label, self.date_edit)
 
-        # Join profile (per schedule)
+        # === Khối "Cách mở & Thử lại" ===
+        open_frame = QFrame()
+        open_frame.setObjectName("openSettingsFrame")
+        open_frame.setStyleSheet("""
+            QFrame#openSettingsFrame {
+                background: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 8px;
+            }
+            QLabel[role="sectionTitle"] {
+                font-weight: bold;
+                color: #0369a1;
+                font-size: 12px;
+            }
+            QLabel[role="hint"] {
+                color: #64748b;
+                font-size: 11px;
+            }
+            QLabel[role="subhint"] {
+                color: #94a3b8;
+                font-size: 11px;
+            }
+        """)
+        open_fl = QVBoxLayout(open_frame)
+        open_fl.setContentsMargins(14, 12, 14, 14)
+        open_fl.setSpacing(6)
+
+        # -- Tiêu đề --
+        mode_title = QLabel("Cách mở phòng Zoom")
+        mode_title.setProperty("role", "sectionTitle")
+        open_fl.addWidget(mode_title)
+
+        # -- Combo chọn thứ tự mode --
         self.join_mode_options = [
-            ("App -> Browser -> Link raw", ["app", "browser", "raw"]),
-            ("Browser -> App -> Link raw", ["browser", "app", "raw"]),
-            ("Chỉ App", ["app"]),
-            ("Chỉ Browser", ["browser"]),
+            ("App → Browser → Link raw  (Khuyên dùng)", ["app", "browser", "raw"]),
+            ("Browser → App → Link raw", ["browser", "app", "raw"]),
+            ("Chỉ App Zoom (cần cài sẵn)", ["app"]),
+            ("Chỉ trình duyệt (Browser)", ["browser"]),
             ("Chỉ Link raw", ["raw"]),
         ]
         self.join_mode_combo = QComboBox()
         self.join_mode_combo.addItems([label for label, _ in self.join_mode_options])
         self.join_mode_combo.setCurrentIndex(0)
-        self.join_mode_combo.setToolTip("Thứ tự áp dụng fallback khi mở Zoom thất bại")
-        layout.addRow("Profile Join:", self.join_mode_combo)
+        open_fl.addWidget(self.join_mode_combo)
 
-        retry_layout = QHBoxLayout()
+        # -- Ghi chú động theo lựa chọn --
+        self.mode_hint_label = QLabel()
+        self.mode_hint_label.setProperty("role", "hint")
+        self.mode_hint_label.setWordWrap(True)
+        open_fl.addWidget(self.mode_hint_label)
+        self.join_mode_combo.currentIndexChanged.connect(self._update_mode_hint)
+        self._update_mode_hint()
+
+        # Đường phân cách
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #bae6fd; margin-top: 2px; margin-bottom: 2px;")
+        open_fl.addWidget(sep)
+
+        # -- Retry settings --
+        retry_title = QLabel("Khi mở thất bại, thử lại:")
+        retry_title.setProperty("role", "sectionTitle")
+        open_fl.addWidget(retry_title)
+
+        retry_row = QHBoxLayout()
+        retry_row.setSpacing(6)
         self.retry_attempts_spin = QSpinBox()
         self.retry_attempts_spin.setRange(1, 5)
         self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY["max_attempts"])
-        self.retry_attempts_spin.setToolTip("Số lần thử lại tối đa trên mỗi mode")
+        self.retry_attempts_spin.setFixedWidth(55)
+        self.retry_attempts_spin.setToolTip("Số lần thử lại tối đa trên mỗi cách mở (1–5)")
 
         self.retry_delay_spin = QSpinBox()
         self.retry_delay_spin.setRange(0, 60)
         self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY["delay_seconds"])
-        self.retry_delay_spin.setToolTip("Thời gian chờ giữa các lần thử (giây)")
+        self.retry_delay_spin.setFixedWidth(55)
+        self.retry_delay_spin.setToolTip("Thời gian chờ giữa các lần thử (0–60 giây)")
 
-        retry_layout.addWidget(QLabel("Lần thử:"))
-        retry_layout.addWidget(self.retry_attempts_spin)
-        retry_layout.addSpacing(10)
-        retry_layout.addWidget(QLabel("Trễ (giây):"))
-        retry_layout.addWidget(self.retry_delay_spin)
-        retry_layout.addStretch()
-        layout.addRow("Retry:", retry_layout)
+        retry_row.addWidget(QLabel("Thử lại"))
+        retry_row.addWidget(self.retry_attempts_spin)
+        retry_row.addWidget(QLabel("lần  •  chờ"))
+        retry_row.addWidget(self.retry_delay_spin)
+        retry_row.addWidget(QLabel("giây giữa mỗi lần"))
+        retry_row.addStretch()
+        open_fl.addLayout(retry_row)
 
-        self.fallback_checkbox = QCheckBox("Bật fallback sang mode kế tiếp khi thất bại")
+        # -- Fallback checkbox --
+        self.fallback_checkbox = QCheckBox("Tự chuyển sang cách mở khác nếu vẫn không được")
         self.fallback_checkbox.setChecked(True)
-        layout.addRow("", self.fallback_checkbox)
+        open_fl.addWidget(self.fallback_checkbox)
+
+        fallback_hint = QLabel("Ví dụ: App thất bại → tự thử qua Browser, rồi Link raw")
+        fallback_hint.setProperty("role", "subhint")
+        fallback_hint.setContentsMargins(22, 0, 0, 0)
+        open_fl.addWidget(fallback_hint)
+
+        layout.addRow(open_frame)
         
         # Event update format
         self.recurrence_combo.currentIndexChanged.connect(self.on_recurrence_changed)
@@ -2246,6 +2307,17 @@ class ScheduleDialog(QDialog):
         # Nếu hợp lệ, gọi phương thức accept gốc
         super().accept()
     
+    def _update_mode_hint(self):
+        hints = [
+            "Thử mở app Zoom trước. Nếu lỗi → thử trình duyệt → dùng link raw.",
+            "Thử mở trình duyệt web trước. Nếu lỗi → thử app Zoom → dùng link raw.",
+            "Luôn mở qua ứng dụng Zoom desktop. Yêu cầu đã cài Zoom.",
+            "Luôn mở qua trình duyệt web. Không cần cài Zoom.",
+            "Dùng đúng link Zoom đã nhập ở ô 'Link Zoom' phía trên.",
+        ]
+        idx = self.join_mode_combo.currentIndex()
+        self.mode_hint_label.setText(hints[idx] if 0 <= idx < len(hints) else "")
+
     def on_recurrence_changed(self):
         text = self.recurrence_combo.currentText()
         
