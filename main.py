@@ -2751,11 +2751,11 @@ class ZoomAutoApp(QMainWindow):
         
         header_layout.addLayout(title_col, 1)
         
-        # Cột phải: Mode indicator badge + Minimize
+        # Cột phải: Mode indicator badge
         right_col = QVBoxLayout()
         right_col.setSpacing(6)
         right_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        
+
         # Mode indicator — Clickable badge
         self.mode_badge = QPushButton()
         self.mode_badge.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2763,27 +2763,7 @@ class ZoomAutoApp(QMainWindow):
         self.mode_badge.setToolTip("Nhấn để chuyển đổi cách mở Zoom")
         self.mode_badge.clicked.connect(self.toggle_open_mode)
         self._update_mode_badge()
-        
-        # Minimize button
-        minimize_btn = QPushButton("Minimize")
-        minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        minimize_btn.setFixedHeight(26)
-        minimize_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(255,255,255,0.2);
-                color: white;
-                border: 1px solid rgba(255,255,255,0.35);
-                border-radius: 4px;
-                font-size: 11px;
-                padding: 2px 12px;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.35);
-            }
-        """)
-        minimize_btn.clicked.connect(self.showMinimized)
-        
-        right_col.addWidget(minimize_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         right_col.addWidget(self.mode_badge, alignment=Qt.AlignmentFlag.AlignRight)
         
         header_layout.addLayout(right_col)
