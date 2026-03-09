@@ -11,3 +11,8 @@
 - Thiết kế lại popup đếm ngược theo kiểu thẻ hiện đại, rõ ràng và chuyên nghiệp hơn.
 - Sửa hiển thị tiếng Việt có dấu trong popup.
 - Làm nổi bật tên cuộc họp Zoom để nhận diện nhanh lịch sắp vào.
+
+## SHA256
+
+- `ZoomAuto-Setup-1.1.5.exe`
+- `65252d709dde0bd07d719b58c58dabdbb8b287c8f27605da4b0b96adde22d36f`
