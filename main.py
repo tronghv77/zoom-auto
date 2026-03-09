@@ -661,6 +661,146 @@ class ZoomOpener(QThread):
             except Exception:
                 pass
 
+class PreJoinCountdownDialog(QDialog):
+    """Popup nhắc trước khi đến giờ tự động vào Zoom."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Nhắc lịch Zoom")
+        self.setModal(False)
+        self.setMinimumWidth(500)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setStyleSheet("""
+            QDialog {
+                background: #f8fafc;
+            }
+            QFrame#countdownCard {
+                background: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+            }
+            QLabel#titleLabel {
+                font-size: 23px;
+                font-weight: 800;
+                color: #0f172a;
+                background: transparent;
+            }
+            QLabel#meetingNameLabel {
+                font-size: 16px;
+                font-weight: 800;
+                color: #0c4a6e;
+                background: #e0f2fe;
+                border: 1px solid #bae6fd;
+                border-radius: 9px;
+                padding: 8px 12px;
+            }
+            QLabel#subtitleLabel {
+                font-size: 13px;
+                color: #475569;
+                background: transparent;
+            }
+            QLabel#countdownLabel {
+                font-size: 24px;
+                font-weight: 800;
+                color: #dc2626;
+                background: #fef2f2;
+                border: 1px solid #fecaca;
+                border-radius: 10px;
+                padding: 10px 12px;
+            }
+            QPushButton#cancelAutoJoinBtn {
+                background: #ffffff;
+                color: #334155;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                padding: 8px 16px;
+                min-width: 140px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton#cancelAutoJoinBtn:hover {
+                background: #f8fafc;
+                border: 1px solid #94a3b8;
+            }
+            QPushButton#okBtn {
+                background: #0284c7;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 20px;
+                min-width: 90px;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QPushButton#okBtn:hover {
+                background: #0369a1;
+            }
+            QPushButton#okBtn:pressed {
+                background: #075985;
+            }
+        """)
+
+        self.current_job_id = None
+        self.current_run_dt = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(12)
+
+        card = QFrame()
+        card.setObjectName("countdownCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(10)
+
+        self.title_label = QLabel("Sắp đến giờ vào Zoom")
+        self.title_label.setObjectName("titleLabel")
+
+        self.meeting_name_label = QLabel("")
+        self.meeting_name_label.setObjectName("meetingNameLabel")
+
+        self.info_label = QLabel("")
+        self.info_label.setObjectName("subtitleLabel")
+        self.info_label.setWordWrap(True)
+
+        self.countdown_label = QLabel("")
+        self.countdown_label.setObjectName("countdownLabel")
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 4, 0, 0)
+        button_row.setSpacing(8)
+        button_row.addStretch()
+
+        self.cancel_auto_btn = QPushButton("Hủy tự động vào")
+        self.cancel_auto_btn.setObjectName("cancelAutoJoinBtn")
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setObjectName("okBtn")
+        self.ok_btn.setDefault(True)
+
+        button_row.addWidget(self.cancel_auto_btn)
+        button_row.addWidget(self.ok_btn)
+
+        card_layout.addWidget(self.title_label)
+        card_layout.addWidget(self.meeting_name_label)
+        card_layout.addWidget(self.info_label)
+        card_layout.addWidget(self.countdown_label)
+
+        layout.addWidget(card)
+        layout.addLayout(button_row)
+
+    def set_payload(self, job_id, run_dt, meeting_name, time_str):
+        self.current_job_id = job_id
+        self.current_run_dt = run_dt
+        safe_name = meeting_name or "Zoom"
+        self.meeting_name_label.setText(f"📌 {safe_name}")
+        self.info_label.setText(f"Cuộc họp sẽ được tự động mở lúc {time_str}.")
+
+    def update_countdown(self, seconds_left):
+        sec = max(0, int(seconds_left))
+        mins = sec // 60
+        secs = sec % 60
+        self.countdown_label.setText(f"Còn {mins:02d}:{secs:02d} để tự động vào Zoom")
+
 class SchedulerManager:
     """Quản lý lập lịch"""
     def __init__(self, callback=None, parent_window=None):
@@ -668,6 +808,7 @@ class SchedulerManager:
         self.scheduler.start()
         self.callback = callback
         self.jobs = {}
+        self.skip_next_runs = {}
         self.active_threads = [] # Danh sách giữ các thread đang chạy
         self.parent_window = parent_window # Thêm parent_window
     
@@ -785,6 +926,26 @@ class SchedulerManager:
         print(f"[LOG] Scheduler trigger: Mo Zoom luc {datetime.now().strftime('%H:%M:%S')} - job={job_id}")
 
         job_data = self.jobs.get(job_id, {})
+        skip_run_at = self.skip_next_runs.get(job_id)
+        if skip_run_at:
+            now_dt = datetime.now(skip_run_at.tzinfo) if skip_run_at.tzinfo else datetime.now()
+            delta_sec = abs((now_dt - skip_run_at).total_seconds())
+            if delta_sec <= 180:
+                self.skip_next_runs.pop(job_id, None)
+                job_data["last_run_meta"] = {
+                    "last_run_time": now_dt.isoformat(),
+                    "last_status": "skipped",
+                    "last_mode": None,
+                    "last_attempt_count": 0,
+                    "last_error_code": "SKIPPED_BY_USER",
+                    "last_error_message": "Nguoi dung huy tu dong vao lan nay",
+                }
+                if self.callback:
+                    self.callback("[INFO] Da bo qua 1 lan tu dong vao theo yeu cau nguoi dung.")
+                return True
+            if now_dt > (skip_run_at + timedelta(minutes=10)):
+                self.skip_next_runs.pop(job_id, None)
+
         meeting_id = meeting_id or job_data.get("meeting_id", "")
         password = password or job_data.get("password", "")
         zoom_link = zoom_link or job_data.get("zoom_link", "")
@@ -917,6 +1078,13 @@ class SchedulerManager:
             return False
         return self._open_zoom(job_id)
 
+    def skip_next_run(self, job_id, run_dt):
+        """Bo qua lan trigger tiep theo cua job tai thoi diem run_dt."""
+        if not job_id or job_id not in self.jobs or not run_dt:
+            return False
+        self.skip_next_runs[job_id] = run_dt
+        return True
+
     def _cleanup_thread(self, thread):
         """Dọn dẹp thread đã xong"""
         if thread in self.active_threads:
@@ -937,6 +1105,7 @@ class SchedulerManager:
                 except Exception:
                     pass
                     
+                self.skip_next_runs.pop(job_id, None)
                 del self.jobs[job_id]
                 return True
         except Exception as e:
@@ -2516,6 +2685,9 @@ class ZoomAutoApp(QMainWindow):
         self.exit_requested = False
         self.last_next_job_id = None
         self.row_by_job_id = {}
+        self.prejoin_prompted_keys = set()
+        self.prejoin_dialog = None
+        self.prejoin_dialog_key = None
         # Tạo UI trước
         self.init_ui()
         # Tải lịch SAU khi UI sẵn sàng
@@ -2528,7 +2700,11 @@ class ZoomAutoApp(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.sync_next_run_ui)
         self.status_timer.start(30000)  # 30 giây
+        self.prejoin_timer = QTimer(self)
+        self.prejoin_timer.timeout.connect(self.check_prejoin_countdown)
+        self.prejoin_timer.start(1000)
         self.sync_next_run_ui()  # Cập nhật ngay lần đầu
+        self.check_prejoin_countdown()
     
     def init_ui(self):
         """Khởi tạo giao diện"""
@@ -3981,6 +4157,77 @@ class ZoomAutoApp(QMainWindow):
                     rec_item.setForeground(disabled_text)
                 else:
                     rec_item.setForeground(normal_text)
+
+    def _build_run_key(self, job_id, run_dt):
+        if not job_id or not run_dt:
+            return None
+        return f"{job_id}|{int(run_dt.timestamp())}"
+
+    def _ensure_prejoin_dialog(self):
+        if self.prejoin_dialog:
+            return
+        self.prejoin_dialog = PreJoinCountdownDialog(self)
+        self.prejoin_dialog.ok_btn.clicked.connect(self.prejoin_dialog.hide)
+        self.prejoin_dialog.cancel_auto_btn.clicked.connect(self.cancel_prejoin_auto_join)
+        self.prejoin_dialog.finished.connect(self._on_prejoin_dialog_closed)
+
+    def _on_prejoin_dialog_closed(self, _result):
+        if self.prejoin_dialog:
+            self.prejoin_dialog_key = None
+
+    def _close_prejoin_dialog(self):
+        if self.prejoin_dialog and self.prejoin_dialog.isVisible():
+            self.prejoin_dialog.hide()
+        self.prejoin_dialog_key = None
+
+    def check_prejoin_countdown(self):
+        try:
+            next_info = self.scheduler.get_next_run_info()
+            if not next_info:
+                self._close_prejoin_dialog()
+                return
+
+            job_id, next_dt = next_info
+            if not next_dt:
+                self._close_prejoin_dialog()
+                return
+
+            now = datetime.now(next_dt.tzinfo) if next_dt.tzinfo else datetime.now()
+            seconds_left = int((next_dt - now).total_seconds())
+            run_key = self._build_run_key(job_id, next_dt)
+
+            if seconds_left <= 0 or seconds_left > 300:
+                if self.prejoin_dialog and self.prejoin_dialog.isVisible():
+                    self._close_prejoin_dialog()
+                return
+
+            jobs = self.scheduler.get_all_jobs()
+            job_data = jobs.get(job_id, {})
+            meeting_name = job_data.get("name") or job_data.get("meeting_id") or "Zoom"
+            time_str = (next_dt.astimezone() if next_dt.tzinfo else next_dt).strftime("%H:%M")
+
+            self._ensure_prejoin_dialog()
+            if run_key not in self.prejoin_prompted_keys:
+                self.prejoin_prompted_keys.add(run_key)
+                self.prejoin_dialog.set_payload(job_id, next_dt, meeting_name, time_str)
+                self.prejoin_dialog_key = run_key
+                self.prejoin_dialog.show()
+                self.prejoin_dialog.raise_()
+                self.prejoin_dialog.activateWindow()
+
+            if self.prejoin_dialog_key == run_key and self.prejoin_dialog.isVisible():
+                self.prejoin_dialog.update_countdown(seconds_left)
+        except Exception:
+            pass
+
+    def cancel_prejoin_auto_join(self):
+        if not self.prejoin_dialog:
+            return
+        job_id = self.prejoin_dialog.current_job_id
+        run_dt = self.prejoin_dialog.current_run_dt
+        if self.scheduler.skip_next_run(job_id, run_dt):
+            self.show_message("Da huy tu dong vao cho lan sap toi.")
+        self._close_prejoin_dialog()
 
     def sync_next_run_ui(self):
         """Đồng bộ trạng thái + highlight lịch sắp chạy theo thay đổi thời gian."""
