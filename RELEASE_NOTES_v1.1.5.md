@@ -1,13 +1,13 @@
 # Zoom Auto Scheduler v1.1.5
 
-## New features
+## Tính năng mới
 
-- Add a 5-minute pre-join popup with live countdown before scheduled auto-join.
-- Add `Huy tu dong vao` action to skip only the upcoming auto-join run.
-- Keep `OK` action to close popup while preserving scheduled auto-join at meeting time.
+- Thêm popup nhắc trước 5 phút với đếm ngược thời gian thực trước giờ tự động vào Zoom.
+- Thêm nút `Hủy tự động vào` để bỏ qua đúng lần tự động vào sắp tới.
+- Giữ nút `OK` để đóng popup nhưng vẫn tự động vào khi đến giờ.
 
-## UI improvements
+## Cải tiến giao diện
 
-- Redesign countdown popup with a cleaner, more professional card-style layout.
-- Improve Vietnamese text rendering with full diacritics.
-- Highlight Zoom meeting name in the popup for faster recognition.
+- Thiết kế lại popup đếm ngược theo kiểu thẻ hiện đại, rõ ràng và chuyên nghiệp hơn.
+- Sửa hiển thị tiếng Việt có dấu trong popup.
+- Làm nổi bật tên cuộc họp Zoom để nhận diện nhanh lịch sắp vào.
