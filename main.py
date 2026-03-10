@@ -2,6 +2,7 @@ import sys
 import json
 import os
 import re
+import subprocess
 import time
 import platform
 import traceback
@@ -574,6 +575,76 @@ DEFAULT_JOIN_PROFILE = {"mode_priority": ["app", "browser", "raw"]}
 DEFAULT_RETRY_POLICY = {"max_attempts": 2, "delay_seconds": 3, "fallback_enabled": True}
 
 
+def normalize_join_profile(join_profile):
+    """Chuan hoa thu tu mo Zoom."""
+    profile = dict(DEFAULT_JOIN_PROFILE)
+    if isinstance(join_profile, dict):
+        modes = join_profile.get("mode_priority")
+        if isinstance(modes, list):
+            normalized = [str(mode).lower() for mode in modes if str(mode).lower() in ("app", "browser", "raw")]
+            if normalized:
+                profile["mode_priority"] = normalized
+    return profile
+
+
+def normalize_retry_policy(retry_policy):
+    """Chuan hoa cau hinh retry/fallback."""
+    policy = dict(DEFAULT_RETRY_POLICY)
+    if isinstance(retry_policy, dict):
+        try:
+            policy["max_attempts"] = max(1, min(5, int(retry_policy.get("max_attempts", policy["max_attempts"]))))
+        except Exception:
+            pass
+        try:
+            policy["delay_seconds"] = max(0, min(60, int(retry_policy.get("delay_seconds", policy["delay_seconds"]))))
+        except Exception:
+            pass
+        policy["fallback_enabled"] = bool(retry_policy.get("fallback_enabled", policy["fallback_enabled"]))
+    return policy
+
+
+def format_join_profile_text(join_profile, retry_policy):
+    """Tao chuoi tom tat cho giao dien."""
+    join_profile = normalize_join_profile(join_profile)
+    retry_policy = normalize_retry_policy(retry_policy)
+    mode_labels = {
+        "app": "App",
+        "browser": "Browser",
+        "raw": "Link raw",
+    }
+    modes = " -> ".join(mode_labels.get(mode, mode.upper()) for mode in join_profile["mode_priority"])
+    retry_text = f"Thu lai {retry_policy['max_attempts']} lan, cho {retry_policy['delay_seconds']}s"
+    fallback_text = "Tu dong fallback" if retry_policy["fallback_enabled"] else "Khong fallback"
+    return f"{modes} | {retry_text} | {fallback_text}"
+
+
+def parse_powercfg_hex_seconds(output: str, label: str) -> Optional[int]:
+    """Lay gia tri giay tu dong 'Current AC/DC Power Setting Index'."""
+    pattern = rf"{re.escape(label)}:\s*0x([0-9a-fA-F]+)"
+    match = re.search(pattern, output or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1), 16)
+    except Exception:
+        return None
+
+
+def parse_powercfg_action_index(output: str, setting_alias: str, ac_dc: str) -> Optional[int]:
+    """Lay action index cho 1 setting trong powercfg /qh."""
+    pattern = (
+        rf"GUID Alias:\s*{re.escape(setting_alias)}.*?"
+        rf"Current {ac_dc} Power Setting Index:\s*0x([0-9a-fA-F]+)"
+    )
+    match = re.search(pattern, output or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    try:
+        return int(match.group(1), 16)
+    except Exception:
+        return None
+
+
 class JoinOpenError(Exception):
     """Lỗi mở Zoom có mã lỗi chuẩn để hiển thị và gửi log."""
 
@@ -788,6 +859,29 @@ class PreJoinCountdownDialog(QDialog):
         layout.addWidget(card)
         layout.addLayout(button_row)
 
+    def _center_on_screen(self):
+        """Center the dialog on the active screen."""
+        self.adjustSize()
+
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            screen = parent.screen()
+        if screen is None:
+            screen = self.screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._center_on_screen()
+
     def set_payload(self, job_id, run_dt, meeting_name, time_str):
         self.current_job_id = job_id
         self.current_run_dt = run_dt
@@ -811,6 +905,12 @@ class SchedulerManager:
         self.skip_next_runs = {}
         self.active_threads = [] # Danh sách giữ các thread đang chạy
         self.parent_window = parent_window # Thêm parent_window
+        self.general_join_profile = dict(DEFAULT_JOIN_PROFILE)
+        self.general_retry_policy = dict(DEFAULT_RETRY_POLICY)
+
+    def set_general_settings(self, join_profile=None, retry_policy=None):
+        self.general_join_profile = normalize_join_profile(join_profile)
+        self.general_retry_policy = normalize_retry_policy(retry_policy)
     
     def add_schedule(self, job_id, hour, minute, meeting_id, password="", enabled=True, name="", recurrence=None, zoom_link="", join_profile=None, retry_policy=None, last_run_meta=None):
         """Thêm hoặc cập nhật lịch"""
@@ -830,8 +930,6 @@ class SchedulerManager:
                 'zoom_link': zoom_link,
                 'enabled': enabled,
                 'recurrence': recurrence,
-                'join_profile': join_profile or dict(DEFAULT_JOIN_PROFILE),
-                'retry_policy': retry_policy or dict(DEFAULT_RETRY_POLICY),
                 'last_run_meta': last_run_meta or {}
             }
             
@@ -950,13 +1048,14 @@ class SchedulerManager:
         password = password or job_data.get("password", "")
         zoom_link = zoom_link or job_data.get("zoom_link", "")
 
-        join_profile = job_data.get("join_profile") or dict(DEFAULT_JOIN_PROFILE)
-        retry_policy = job_data.get("retry_policy") or dict(DEFAULT_RETRY_POLICY)
+        join_profile = self.general_join_profile or dict(DEFAULT_JOIN_PROFILE)
+        retry_policy = self.general_retry_policy or dict(DEFAULT_RETRY_POLICY)
         modes = join_profile.get("mode_priority") or list(DEFAULT_JOIN_PROFILE["mode_priority"])
         modes = [m for m in modes if m in ("app", "browser", "raw")]
         if not modes:
             modes = list(DEFAULT_JOIN_PROFILE["mode_priority"])
 
+        retry_policy = normalize_retry_policy(retry_policy)
         try:
             max_attempts = max(1, min(5, int(retry_policy.get("max_attempts", DEFAULT_RETRY_POLICY["max_attempts"]))))
         except Exception:
@@ -1288,6 +1387,409 @@ class TestZoomDialog(QDialog):
         
         webbrowser.open(url)
         print(f"[DEBUG] Mở zoommtg: {url}")
+
+
+class StandardSetupGuideDialog(QDialog):
+    """Huong dan quy trinh chuan de vao Zoom thang khong hoi lai."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Quy trình vào thẳng Zoom")
+        self.resize(860, 680)
+        self.setModal(True)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        header = QWidget()
+        header.setFixedHeight(110)
+        header.setStyleSheet("""
+            QWidget {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0284c7, stop:1 #0369a1);
+            }
+        """)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(28, 20, 28, 20)
+        header_layout.setSpacing(4)
+
+        title = QLabel("Quy trình chuẩn để vào thẳng Zoom")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: white; background: transparent;")
+        subtitle = QLabel("Mục tiêu: đến giờ là Zoom vào thẳng, hạn chế tối đa mọi cửa sổ hỏi thêm.")
+        subtitle.setStyleSheet("font-size: 13px; color: rgba(255,255,255,0.92); background: transparent;")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch()
+
+        content = QTextBrowser()
+        content.setOpenExternalLinks(True)
+        content.setStyleSheet("""
+            QTextBrowser {
+                border: none;
+                background: white;
+                padding: 12px 8px;
+                font-size: 14px;
+            }
+        """)
+        content.setHtml("""
+        <style>
+            body { font-family: 'Segoe UI', sans-serif; color: #0f172a; line-height: 1.6; }
+            h2 { color: #0369a1; margin-top: 20px; font-size: 21px; }
+            h3 { color: #0f172a; margin-top: 16px; font-size: 17px; }
+            .card {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin: 12px 0;
+            }
+            .ok {
+                background: #f0fdf4;
+                border-left: 4px solid #16a34a;
+            }
+            .warn {
+                background: #fff7ed;
+                border-left: 4px solid #ea580c;
+            }
+            .danger {
+                background: #fef2f2;
+                border-left: 4px solid #dc2626;
+            }
+            .step {
+                background: #eff6ff;
+                border-left: 4px solid #2563eb;
+                padding: 12px 14px;
+                border-radius: 8px;
+                margin: 10px 0;
+            }
+            .step b { color: #1d4ed8; }
+            ul { margin: 8px 0; padding-left: 22px; }
+            li { margin: 6px 0; }
+            .link { color: #0284c7; text-decoration: none; font-weight: 600; }
+            .link:hover { text-decoration: underline; }
+            .check { color: #15803d; font-weight: 700; }
+        </style>
+
+        <div class="card ok">
+            <b>Mục tiêu thực tế:</b> loại bỏ tối đa các bước trung gian như màn hình preview của Zoom, hộp thoại trình duyệt hỏi mở Zoom, phòng chờ hoặc yêu cầu xác nhận không cần thiết.
+        </div>
+
+        <h2>1. Cài đặt trong Zoom Desktop</h2>
+        <div class="step"><b>Bước 1:</b> Cài Zoom Desktop và đăng nhập sẵn tài khoản của bạn.</div>
+        <div class="step"><b>Bước 2:</b> Mở <b>Settings</b> trong Zoom Desktop và tìm các tùy chọn liên quan đến preview/xác nhận trước khi vào phòng.</div>
+        <ul>
+            <li>Tắt các mục kiểu <b>Show video preview before joining a meeting</b>.</li>
+            <li>Bật <b>Automatically connect to computer audio when joining a meeting</b> để tránh hỏi thêm phần audio.</li>
+            <li>Nếu phù hợp, cấu hình sẵn camera/micro để Zoom không hiện thêm bước xác nhận thủ công.</li>
+        </ul>
+        <div class="card warn">
+            Tên mục có thể khác nhẹ tùy phiên bản Zoom. Ý chính là: <b>tắt preview trước khi join</b> và <b>tự động kết nối audio</b>.
+        </div>
+
+        <h2>2. Cài đặt trong trình duyệt</h2>
+        <div class="step"><b>Bước 3:</b> Dùng đúng trình duyệt mặc định bạn sẽ dùng hàng ngày, ví dụ Chrome hoặc Edge.</div>
+        <div class="step"><b>Bước 4:</b> Mở thử một link Zoom bằng tay.</div>
+        <ul>
+            <li>Khi thấy hộp thoại kiểu <b>Open Zoom Meetings?</b> hoặc <b>Có muốn tham gia cuộc họp bằng ứng dụng Zoom?</b>, hãy tick <b>Always allow</b> hoặc <b>Luôn cho phép</b>.</li>
+            <li>Sau đó bấm <b>Open Zoom Meetings</b>.</li>
+        </ul>
+        <div class="card ok">
+            Sau khi quyền này được lưu, các lần mở link Zoom sau thường sẽ đi thẳng vào app mà không hỏi lại.
+        </div>
+        <div class="card warn">
+            Nếu trước đó đã lỡ bấm sai, hãy vào <b>Site settings / Permissions</b> của trình duyệt, xóa quyền của <b>zoom.us</b>, rồi mở lại link và chọn <b>Always allow</b>.
+        </div>
+
+        <h2>3. Cài đặt trong tài khoản Zoom</h2>
+        <div class="step"><b>Bước 5:</b> Truy cập <a class="link" href="https://zoom.us/profile/setting">https://zoom.us/profile/setting</a>.</div>
+        <ul>
+            <li>Tắt <b>Waiting Room</b>.</li>
+            <li>Nếu bạn là host, bật <b>Allow participants to join before host</b>.</li>
+            <li>Nếu cuộc họp bắt buộc đăng nhập mới vào được, hãy đảm bảo máy đang đăng nhập đúng tài khoản Zoom đó.</li>
+        </ul>
+        <div class="card danger">
+            Nếu host bật <b>Waiting Room</b> hoặc yêu cầu xác thực thủ công, phần mềm không thể tự vượt qua thay bạn.
+        </div>
+
+        <h2>4. Cài đặt trong Zoom Auto Scheduler</h2>
+        <div class="step"><b>Bước 6:</b> Vào <b>Cài đặt &gt; Cài đặt chung cho tất cả lịch</b>.</div>
+        <ul>
+            <li>Nếu muốn hạn chế tối đa popup trung gian: chọn <b>Chỉ App Zoom (cần cài sẵn)</b>.</li>
+            <li>Nếu muốn an toàn hơn khi app có lúc mở lỗi: chọn <b>App -&gt; Browser -&gt; Link raw</b>.</li>
+            <li>Đặt <b>Thử lại</b> khoảng <b>2 lần</b>, chờ <b>3 giây</b> là hợp lý cho đa số máy.</li>
+            <li>Nếu bạn không muốn app tự rẽ sang trình duyệt rồi hiện popup browser, hãy <b>tắt fallback</b>.</li>
+        </ul>
+        <div class="step"><b>Bước 7:</b> Khi tạo lịch, ưu tiên dùng <b>Link Zoom</b> đầy đủ thay vì chỉ nhập Meeting ID.</div>
+
+        <h2>5. Cài đặt nguồn điện của Windows</h2>
+        <div class="step"><b>Bước 8:</b> Đảm bảo máy <b>không vào Sleep</b> vào thời điểm chờ mở Zoom.</div>
+        <ul>
+            <li>Bạn có thể để màn hình tắt, nhưng <b>không được để máy Sleep</b>.</li>
+            <li>Kiểm tra cả 2 chế độ: <b>khi cắm sạc</b> và <b>khi dùng pin</b>.</li>
+            <li>Nếu dùng laptop, lưu ý việc <b>gập nắp máy</b> cũng có thể làm máy Sleep.</li>
+        </ul>
+
+        <h2>6. Checklist kiểm tra nhanh</h2>
+        <div class="card">
+            <div class="check">[ ]</div> Zoom Desktop đã cài và đã đăng nhập<br>
+            <div class="check">[ ]</div> Đã tắt preview trước khi join<br>
+            <div class="check">[ ]</div> Đã bật tự động kết nối audio<br>
+            <div class="check">[ ]</div> Trình duyệt đã chọn <b>Always allow</b> cho Zoom<br>
+            <div class="check">[ ]</div> Waiting Room đã tắt<br>
+            <div class="check">[ ]</div> Nếu là host: đã bật join before host<br>
+            <div class="check">[ ]</div> App đã chọn cách mở phù hợp<br>
+            <div class="check">[ ]</div> Lịch dùng Link Zoom đầy đủ<br>
+            <div class="check">[ ]</div> Máy không vào Sleep khi chờ tới giờ
+        </div>
+
+        <h2>7. Các tình huống vẫn có thể chặn tự động</h2>
+        <ul>
+            <li>Host bật Waiting Room.</li>
+            <li>Cuộc họp yêu cầu đăng nhập đúng tài khoản mới được vào.</li>
+            <li>Windows hỏi chọn ứng dụng mở liên kết <b>zoommtg://</b> do máy chưa đặt mặc định.</li>
+            <li>Zoom Desktop bị đăng xuất.</li>
+            <li>Link Zoom thiếu hoặc sai mật khẩu.</li>
+            <li>CAPTCHA hoặc bước xác minh bảo mật từ phía Zoom/host.</li>
+            <li>Máy tính chuyển sang Sleep trước giờ hẹn.</li>
+        </ul>
+
+        <div class="card ok">
+            <b>Kết luận:</b> nếu bạn làm đủ các bước trên thì xác suất vào thẳng sẽ rất cao. Những trường hợp còn bị chặn thường đến từ chính sách của cuộc họp hoặc tài khoản Zoom, không phải do app.
+        </div>
+        """)
+
+        footer = QWidget()
+        footer.setStyleSheet("background-color: #f8fafc; border-top: 1px solid #e2e8f0;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(20, 14, 20, 14)
+
+        open_settings_btn = QPushButton("⚙️ Mở cài đặt chung")
+        open_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_settings_btn.clicked.connect(self._open_general_settings)
+        close_btn = QPushButton("Đóng")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+
+        footer_layout.addWidget(open_settings_btn)
+        footer_layout.addStretch()
+        footer_layout.addWidget(close_btn)
+
+        main_layout.addWidget(header)
+        main_layout.addWidget(content, 1)
+        main_layout.addWidget(footer)
+
+    def _open_general_settings(self):
+        parent = self.parentWidget()
+        if parent and hasattr(parent, "open_general_settings_dialog"):
+            parent.open_general_settings_dialog()
+
+
+class SleepModeStatusDialog(QDialog):
+    """Dialog hien thi canh bao sleep mode dep va ro rang hon."""
+
+    def __init__(self, status, parent=None, manual=False):
+        super().__init__(parent)
+        has_risk = bool((status or {}).get("has_risk"))
+        self.setWindowTitle("Cảnh báo Sleep Mode" if has_risk else "Kiểm tra Sleep Mode")
+        self.resize(760, 520 if has_risk else 440)
+        self.setModal(True)
+
+        accent = "#dc2626" if has_risk else "#0284c7"
+        soft_bg = "#fef2f2" if has_risk else "#eff6ff"
+        title_text = "Máy có thể làm lỡ lịch Zoom" if has_risk else "Trạng thái Sleep Mode"
+        subtitle_text = (
+            "Nếu máy đi vào Sleep thì ứng dụng sẽ không hoạt động bình thường."
+            if has_risk else
+            "Kết quả kiểm tra nhanh cấu hình nguồn điện của Windows."
+        )
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: #f8fafc;
+            }}
+            QWidget#header {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {accent}, stop:1 #0f172a);
+            }}
+            QFrame[class="card"] {{
+                background: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+            }}
+            QFrame[class="note"] {{
+                background: {soft_bg};
+                border: 1px solid #fecaca;
+                border-radius: 10px;
+            }}
+            QLabel#title {{
+                font-size: 24px;
+                font-weight: bold;
+                color: white;
+                background: transparent;
+            }}
+            QLabel#subtitle {{
+                font-size: 13px;
+                color: rgba(255,255,255,0.9);
+                background: transparent;
+            }}
+            QLabel.section {{
+                font-size: 14px;
+                font-weight: 700;
+                color: #0f172a;
+            }}
+            QLabel.body {{
+                font-size: 13px;
+                color: #334155;
+            }}
+            QLabel.bullet {{
+                font-size: 13px;
+                color: #0f172a;
+                padding: 3px 0;
+            }}
+            QPushButton#primaryBtn {{
+                background-color: {accent};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                min-width: 110px;
+                min-height: 38px;
+                font-weight: bold;
+            }}
+            QPushButton#primaryBtn:hover {{
+                opacity: 0.92;
+            }}
+            QPushButton#ghostBtn {{
+                background-color: white;
+                color: #334155;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                min-width: 110px;
+                min-height: 38px;
+                font-weight: 600;
+            }}
+        """)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        header = QWidget()
+        header.setObjectName("header")
+        header.setFixedHeight(104)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(26, 18, 26, 18)
+        header_layout.setSpacing(4)
+
+        title = QLabel(title_text)
+        title.setObjectName("title")
+        subtitle = QLabel(subtitle_text)
+        subtitle.setObjectName("subtitle")
+        subtitle.setWordWrap(True)
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(22, 20, 22, 20)
+        content_layout.setSpacing(14)
+
+        summary_card = QFrame()
+        summary_card.setObjectName("summaryCard")
+        summary_card.setProperty("class", "note")
+        summary_layout = QHBoxLayout(summary_card)
+        summary_layout.setContentsMargins(16, 14, 16, 14)
+        summary_layout.setSpacing(12)
+
+        icon_label = QLabel("⚠" if has_risk else "ℹ")
+        icon_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #0f172a; background: transparent;")
+        summary_text = QLabel(status.get("summary", "Không có dữ liệu kiểm tra."))
+        summary_text.setWordWrap(True)
+        summary_text.setStyleSheet("font-size: 14px; font-weight: 600; color: #0f172a; background: transparent;")
+        summary_layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignTop)
+        summary_layout.addWidget(summary_text, 1)
+        content_layout.addWidget(summary_card)
+
+        detail_card = QFrame()
+        detail_card.setProperty("class", "card")
+        detail_layout = QVBoxLayout(detail_card)
+        detail_layout.setContentsMargins(18, 16, 18, 16)
+        detail_layout.setSpacing(10)
+
+        detail_title = QLabel("Các điểm đã phát hiện")
+        detail_title.setProperty("class", "section")
+        detail_title.setObjectName("")
+        detail_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0f172a;")
+        detail_layout.addWidget(detail_title)
+
+        details = status.get("details", []) or ["Không có chi tiết."]
+        for line in details:
+            bullet = QLabel(f"• {line}")
+            bullet.setWordWrap(True)
+            bullet.setProperty("class", "bullet")
+            detail_layout.addWidget(bullet)
+        content_layout.addWidget(detail_card)
+
+        if has_risk:
+            rec_card = QFrame()
+            rec_card.setProperty("class", "card")
+            rec_layout = QVBoxLayout(rec_card)
+            rec_layout.setContentsMargins(18, 16, 18, 16)
+            rec_layout.setSpacing(10)
+
+            rec_title = QLabel("Khuyến nghị")
+            rec_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0f172a;")
+            rec_layout.addWidget(rec_title)
+
+            recommendations = [
+                "Đặt Sleep = Never trong Power Options.",
+                "Có thể tắt màn hình, nhưng không được để máy Sleep trước giờ hẹn.",
+                "Kiểm tra cả khi cắm sạc và khi dùng pin.",
+                "Nếu dùng laptop, xem lại hành động khi gập nắp máy và bấm nút nguồn.",
+            ]
+            for line in recommendations:
+                bullet = QLabel(f"• {line}")
+                bullet.setWordWrap(True)
+                bullet.setProperty("class", "bullet")
+                rec_layout.addWidget(bullet)
+            content_layout.addWidget(rec_card)
+
+        if manual and not has_risk:
+            okay_card = QFrame()
+            okay_card.setProperty("class", "card")
+            okay_layout = QVBoxLayout(okay_card)
+            okay_layout.setContentsMargins(18, 16, 18, 16)
+            okay_layout.setSpacing(8)
+            okay_title = QLabel("Đánh giá")
+            okay_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0f172a;")
+            okay_body = QLabel("Không thấy sleep timeout tự động gây rủi ro trong power plan hiện tại. Bạn vẫn nên tránh gập nắp máy hoặc bấm nút Sleep trước giờ hẹn.")
+            okay_body.setWordWrap(True)
+            okay_body.setProperty("class", "body")
+            okay_layout.addWidget(okay_title)
+            okay_layout.addWidget(okay_body)
+            content_layout.addWidget(okay_card)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+
+        footer = QWidget()
+        footer.setStyleSheet("background: white; border-top: 1px solid #e2e8f0;")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(18, 14, 18, 14)
+
+        close_btn = QPushButton("Đóng")
+        close_btn.setObjectName("primaryBtn")
+        close_btn.clicked.connect(self.accept)
+        footer_layout.addStretch()
+        footer_layout.addWidget(close_btn)
+
+        main_layout.addWidget(header)
+        main_layout.addWidget(scroll, 1)
+        main_layout.addWidget(footer)
 
 
 class HelpDialog(QDialog):
@@ -1703,6 +2205,18 @@ class HelpDialog(QDialog):
         <div class="warning">
             <b>🔒 Lưu ý bảo mật:</b> Việc tắt Phòng chờ có thể làm giảm tính bảo mật. Chỉ chia sẻ link/ID với người tin tưởng.
         </div>
+
+        <h2 style="color:#0284c7;">🚀 Quy trình chuẩn để vào thẳng không hỏi lại</h2>
+        <div class="success">
+            <b>Làm đủ 5 nhóm bước sau để tăng khả năng vào thẳng phòng Zoom khi đến giờ:</b>
+            <br>1. Cài Zoom Desktop và đăng nhập sẵn
+            <br>2. Tắt màn hình preview trước khi join, bật tự động kết nối audio
+            <br>3. Trong trình duyệt, mở thử link Zoom và chọn <b>Always allow / Luôn cho phép</b>
+            <br>4. Trên tài khoản Zoom web, tắt <b>Waiting Room</b>; nếu là host thì bật <b>Join before host</b>
+            <br>5. Trong app này, vào <b>Cài đặt chung</b> và ưu tiên mở bằng <b>App Zoom</b>
+            <br>6. Trong Windows, để <b>Sleep = Never</b> vào thời gian bạn chờ tới lịch hẹn
+            <br><br><b>Gợi ý:</b> ưu tiên dùng <b>Link Zoom</b> đầy đủ thay vì chỉ nhập Meeting ID.
+        </div>
         
         <h2 style="color:#059669;">💻 Chế độ mở Zoom</h2>
         
@@ -2003,6 +2517,178 @@ class AboutDialog(QDialog):
             
         group_box.setLayout(form_layout)
         return group_box
+
+
+class GeneralZoomSettingsDialog(QDialog):
+    """Dialog cai dat chung cach mo Zoom cho tat ca lich."""
+
+    def __init__(self, join_profile=None, retry_policy=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Cài đặt chung")
+        self.resize(560, 360)
+        self.setModal(True)
+        self.join_mode_options = [
+            ("App -> Browser -> Link raw  (Khuyến dùng)", ["app", "browser", "raw"]),
+            ("Browser -> App -> Link raw", ["browser", "app", "raw"]),
+            ("Chỉ App Zoom (cần cài sẵn)", ["app"]),
+            ("Chỉ trình duyệt (Browser)", ["browser"]),
+            ("Chỉ Link raw", ["raw"]),
+        ]
+
+        self.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0f9ff, stop:1 #e0f2fe);
+            }
+            QFrame#openSettingsFrame {
+                background: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 8px;
+            }
+            QLabel[role="sectionTitle"] {
+                font-weight: bold;
+                color: #0369a1;
+                font-size: 12px;
+            }
+            QLabel[role="hint"] {
+                color: #64748b;
+                font-size: 11px;
+            }
+            QLabel[role="subhint"] {
+                color: #94a3b8;
+                font-size: 11px;
+            }
+            QComboBox, QSpinBox {
+                padding: 8px 10px;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                background: white;
+                color: #0f172a;
+            }
+            QCheckBox {
+                color: #0f172a;
+            }
+            QPushButton {
+                min-width: 100px;
+                min-height: 36px;
+                border-radius: 6px;
+            }
+        """)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(12)
+
+        title = QLabel("Áp dụng cho tất cả các lịch")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #0f172a;")
+        main_layout.addWidget(title)
+
+        subtitle = QLabel("Thiết lập cách mở Zoom, số lần thử lại và fallback dùng chung.")
+        subtitle.setStyleSheet("color: #475569;")
+        main_layout.addWidget(subtitle)
+
+        open_frame = QFrame()
+        open_frame.setObjectName("openSettingsFrame")
+        open_fl = QVBoxLayout(open_frame)
+        open_fl.setContentsMargins(14, 12, 14, 14)
+        open_fl.setSpacing(6)
+
+        mode_title = QLabel("Cách mở phòng Zoom")
+        mode_title.setProperty("role", "sectionTitle")
+        open_fl.addWidget(mode_title)
+
+        self.join_mode_combo = QComboBox()
+        self.join_mode_combo.addItems([label for label, _ in self.join_mode_options])
+        open_fl.addWidget(self.join_mode_combo)
+
+        self.mode_hint_label = QLabel()
+        self.mode_hint_label.setProperty("role", "hint")
+        self.mode_hint_label.setWordWrap(True)
+        open_fl.addWidget(self.mode_hint_label)
+        self.join_mode_combo.currentIndexChanged.connect(self._update_mode_hint)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #bae6fd; margin-top: 2px; margin-bottom: 2px;")
+        open_fl.addWidget(sep)
+
+        retry_title = QLabel("Khi mở thất bại, thử lại:")
+        retry_title.setProperty("role", "sectionTitle")
+        open_fl.addWidget(retry_title)
+
+        retry_row = QHBoxLayout()
+        retry_row.setSpacing(6)
+
+        self.retry_attempts_spin = QSpinBox()
+        self.retry_attempts_spin.setRange(1, 5)
+        self.retry_attempts_spin.setFixedWidth(75)
+
+        self.retry_delay_spin = QSpinBox()
+        self.retry_delay_spin.setRange(0, 60)
+        self.retry_delay_spin.setFixedWidth(75)
+
+        retry_row.addWidget(QLabel("Thử lại"))
+        retry_row.addWidget(self.retry_attempts_spin)
+        retry_row.addWidget(QLabel("lần • chờ"))
+        retry_row.addWidget(self.retry_delay_spin)
+        retry_row.addWidget(QLabel("giây giữa mỗi lần"))
+        retry_row.addStretch()
+        open_fl.addLayout(retry_row)
+
+        self.fallback_checkbox = QCheckBox("Tự chuyển sang cách mở khác nếu vẫn không được")
+        open_fl.addWidget(self.fallback_checkbox)
+
+        fallback_hint = QLabel("Ví dụ: App thất bại -> tự thử qua Browser, rồi Link raw")
+        fallback_hint.setProperty("role", "subhint")
+        fallback_hint.setContentsMargins(22, 0, 0, 0)
+        open_fl.addWidget(fallback_hint)
+
+        main_layout.addWidget(open_frame)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
+
+        self.set_data(join_profile, retry_policy)
+        self._update_mode_hint()
+
+    def _update_mode_hint(self):
+        idx = self.join_mode_combo.currentIndex()
+        modes = self.join_mode_options[idx][1]
+        text_map = {
+            ("app", "browser", "raw"): "Thử mở app Zoom trước. Nếu lỗi -> thử trình duyệt -> dùng link raw.",
+            ("browser", "app", "raw"): "Thử mở trình duyệt web trước. Nếu lỗi -> thử app Zoom -> dùng link raw.",
+            ("app",): "Chỉ dùng app Zoom Desktop. Phù hợp khi máy đã cài Zoom.",
+            ("browser",): "Chỉ mở qua trình duyệt web bằng link HTTPS.",
+            ("raw",): "Chỉ mở link raw/deep-link. Chỉ dùng khi bạn chắc link hợp lệ.",
+        }
+        self.mode_hint_label.setText(text_map.get(tuple(modes), "Chọn thứ tự mở Zoom phù hợp với máy của bạn."))
+
+    def set_data(self, join_profile=None, retry_policy=None):
+        join_profile = normalize_join_profile(join_profile)
+        retry_policy = normalize_retry_policy(retry_policy)
+
+        combo_index = 0
+        for idx, (_, modes) in enumerate(self.join_mode_options):
+            if modes == join_profile["mode_priority"]:
+                combo_index = idx
+                break
+        self.join_mode_combo.setCurrentIndex(combo_index)
+        self.retry_attempts_spin.setValue(retry_policy["max_attempts"])
+        self.retry_delay_spin.setValue(retry_policy["delay_seconds"])
+        self.fallback_checkbox.setChecked(retry_policy["fallback_enabled"])
+
+    def get_data(self):
+        return {
+            "join_profile": {
+                "mode_priority": self.join_mode_options[self.join_mode_combo.currentIndex()][1]
+            },
+            "retry_policy": {
+                "max_attempts": self.retry_attempts_spin.value(),
+                "delay_seconds": self.retry_delay_spin.value(),
+                "fallback_enabled": self.fallback_checkbox.isChecked(),
+            }
+        }
 
 
 class ScheduleDialog(QDialog):
@@ -2323,104 +3009,6 @@ class ScheduleDialog(QDialog):
         """)
         
         layout.addRow(self.date_label, self.date_edit)
-
-        # === Khối "Cách mở & Thử lại" ===
-        open_frame = QFrame()
-        open_frame.setObjectName("openSettingsFrame")
-        open_frame.setStyleSheet("""
-            QFrame#openSettingsFrame {
-                background: #f0f9ff;
-                border: 1px solid #bae6fd;
-                border-radius: 8px;
-            }
-            QLabel[role="sectionTitle"] {
-                font-weight: bold;
-                color: #0369a1;
-                font-size: 12px;
-            }
-            QLabel[role="hint"] {
-                color: #64748b;
-                font-size: 11px;
-            }
-            QLabel[role="subhint"] {
-                color: #94a3b8;
-                font-size: 11px;
-            }
-        """)
-        open_fl = QVBoxLayout(open_frame)
-        open_fl.setContentsMargins(14, 12, 14, 14)
-        open_fl.setSpacing(6)
-
-        # -- Tiêu đề --
-        mode_title = QLabel("Cách mở phòng Zoom")
-        mode_title.setProperty("role", "sectionTitle")
-        open_fl.addWidget(mode_title)
-
-        # -- Combo chọn thứ tự mode --
-        self.join_mode_options = [
-            ("App → Browser → Link raw  (Khuyên dùng)", ["app", "browser", "raw"]),
-            ("Browser → App → Link raw", ["browser", "app", "raw"]),
-            ("Chỉ App Zoom (cần cài sẵn)", ["app"]),
-            ("Chỉ trình duyệt (Browser)", ["browser"]),
-            ("Chỉ Link raw", ["raw"]),
-        ]
-        self.join_mode_combo = QComboBox()
-        self.join_mode_combo.addItems([label for label, _ in self.join_mode_options])
-        self.join_mode_combo.setCurrentIndex(0)
-        open_fl.addWidget(self.join_mode_combo)
-
-        # -- Ghi chú động theo lựa chọn --
-        self.mode_hint_label = QLabel()
-        self.mode_hint_label.setProperty("role", "hint")
-        self.mode_hint_label.setWordWrap(True)
-        open_fl.addWidget(self.mode_hint_label)
-        self.join_mode_combo.currentIndexChanged.connect(self._update_mode_hint)
-        self._update_mode_hint()
-
-        # Đường phân cách
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #bae6fd; margin-top: 2px; margin-bottom: 2px;")
-        open_fl.addWidget(sep)
-
-        # -- Retry settings --
-        retry_title = QLabel("Khi mở thất bại, thử lại:")
-        retry_title.setProperty("role", "sectionTitle")
-        open_fl.addWidget(retry_title)
-
-        retry_row = QHBoxLayout()
-        retry_row.setSpacing(6)
-        self.retry_attempts_spin = QSpinBox()
-        self.retry_attempts_spin.setRange(1, 5)
-        self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY["max_attempts"])
-        self.retry_attempts_spin.setFixedWidth(75)
-        self.retry_attempts_spin.setToolTip("Số lần thử lại tối đa trên mỗi cách mở (1–5)")
-
-        self.retry_delay_spin = QSpinBox()
-        self.retry_delay_spin.setRange(0, 60)
-        self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY["delay_seconds"])
-        self.retry_delay_spin.setFixedWidth(75)
-        self.retry_delay_spin.setToolTip("Thời gian chờ giữa các lần thử (0–60 giây)")
-
-        retry_row.addWidget(QLabel("Thử lại"))
-        retry_row.addWidget(self.retry_attempts_spin)
-        retry_row.addWidget(QLabel("lần  •  chờ"))
-        retry_row.addWidget(self.retry_delay_spin)
-        retry_row.addWidget(QLabel("giây giữa mỗi lần"))
-        retry_row.addStretch()
-        open_fl.addLayout(retry_row)
-
-        # -- Fallback checkbox --
-        self.fallback_checkbox = QCheckBox("Tự chuyển sang cách mở khác nếu vẫn không được")
-        self.fallback_checkbox.setChecked(True)
-        open_fl.addWidget(self.fallback_checkbox)
-
-        fallback_hint = QLabel("Ví dụ: App thất bại → tự thử qua Browser, rồi Link raw")
-        fallback_hint.setProperty("role", "subhint")
-        fallback_hint.setContentsMargins(22, 0, 0, 0)
-        open_fl.addWidget(fallback_hint)
-
-        layout.addRow(open_frame)
         
         # Event update format
         self.recurrence_combo.currentIndexChanged.connect(self.on_recurrence_changed)
@@ -2505,17 +3093,6 @@ class ScheduleDialog(QDialog):
         # Nếu hợp lệ, gọi phương thức accept gốc
         super().accept()
     
-    def _update_mode_hint(self):
-        hints = [
-            "Thử mở app Zoom trước. Nếu lỗi → thử trình duyệt → dùng link raw.",
-            "Thử mở trình duyệt web trước. Nếu lỗi → thử app Zoom → dùng link raw.",
-            "Luôn mở qua ứng dụng Zoom desktop. Yêu cầu đã cài Zoom.",
-            "Luôn mở qua trình duyệt web. Không cần cài Zoom.",
-            "Dùng đúng link Zoom đã nhập ở ô 'Link Zoom' phía trên.",
-        ]
-        idx = self.join_mode_combo.currentIndex()
-        self.mode_hint_label.setText(hints[idx] if 0 <= idx < len(hints) else "")
-
     def on_recurrence_changed(self):
         text = self.recurrence_combo.currentText()
         
@@ -2565,8 +3142,6 @@ class ScheduleDialog(QDialog):
             recurrence_type = "custom"
             recurrence_details = self.custom_recurrence_data
 
-        selected_join_modes = self.join_mode_options[self.join_mode_combo.currentIndex()][1]
-
         return {
             'name': self.name_input.text(),
             'meeting_id': self.meeting_id_input.text().replace(" ", ""),
@@ -2578,14 +3153,6 @@ class ScheduleDialog(QDialog):
                 'type': recurrence_type,
                 'run_date': dt_iso,
                 'details': recurrence_details
-            },
-            'join_profile': {
-                'mode_priority': selected_join_modes
-            },
-            'retry_policy': {
-                'max_attempts': self.retry_attempts_spin.value(),
-                'delay_seconds': self.retry_delay_spin.value(),
-                'fallback_enabled': self.fallback_checkbox.isChecked()
             }
         }
 
@@ -2646,27 +3213,6 @@ class ScheduleDialog(QDialog):
         self.date_label.setVisible(is_once)
         self.date_edit.setVisible(is_once)
 
-        join_profile = data.get('join_profile', {}) or {}
-        mode_priority = join_profile.get('mode_priority', DEFAULT_JOIN_PROFILE['mode_priority'])
-        mode_priority = [str(m).lower() for m in mode_priority]
-        combo_join_index = 0
-        for idx, (_, modes) in enumerate(self.join_mode_options):
-            if modes == mode_priority:
-                combo_join_index = idx
-                break
-        self.join_mode_combo.setCurrentIndex(combo_join_index)
-
-        retry_policy = data.get('retry_policy', {}) or {}
-        try:
-            self.retry_attempts_spin.setValue(int(retry_policy.get('max_attempts', DEFAULT_RETRY_POLICY['max_attempts'])))
-        except Exception:
-            self.retry_attempts_spin.setValue(DEFAULT_RETRY_POLICY['max_attempts'])
-        try:
-            self.retry_delay_spin.setValue(int(retry_policy.get('delay_seconds', DEFAULT_RETRY_POLICY['delay_seconds'])))
-        except Exception:
-            self.retry_delay_spin.setValue(DEFAULT_RETRY_POLICY['delay_seconds'])
-        self.fallback_checkbox.setChecked(bool(retry_policy.get('fallback_enabled', DEFAULT_RETRY_POLICY['fallback_enabled'])))
-
 class ZoomAutoApp(QMainWindow):
     """Ứng dụng chính"""
     def __init__(self):
@@ -2676,13 +3222,18 @@ class ZoomAutoApp(QMainWindow):
         self.setWindowIcon(QIcon(str(Path(__file__).parent / "app.ico")))
         
         # Load settings
-        self.open_mode = "browser"  # Mặc định: mở bằng trình duyệt
+        self.general_join_profile = dict(DEFAULT_JOIN_PROFILE)
+        self.general_retry_policy = dict(DEFAULT_RETRY_POLICY)
+        self.standard_guide_prompt_shown = False
+        self.standard_guide_prompt_opt_out = False
         self.load_settings()
         
         # Khởi tạo scheduler (trước khi UI để tránh lỗi callback)
         self.scheduler = SchedulerManager(callback=self.show_message, parent_window=self)
+        self.scheduler.set_general_settings(self.general_join_profile, self.general_retry_policy)
         self.tray_icon = None
         self.exit_requested = False
+        self.update_restart_in_progress = False
         self.last_next_job_id = None
         self.row_by_job_id = {}
         self.prejoin_prompted_keys = set()
@@ -2695,6 +3246,7 @@ class ZoomAutoApp(QMainWindow):
         self.refresh_table()
         self.init_tray()
         self.update_tray_tooltip()
+        QTimer.singleShot(1800, self.check_sleep_mode_warning)
         
         # Timer tự động cập nhật status bar (mỗi 30 giây)
         self.status_timer = QTimer(self)
@@ -2969,22 +3521,17 @@ class ZoomAutoApp(QMainWindow):
         # --- Menu 1: Cài đặt ---
         settings_menu = menu_bar.addMenu("⚙️ Cài đặt")
         
-        # Cách mở Zoom (radio options trực tiếp)
-        mode_label = settings_menu.addAction("💻 Cách mở Zoom:")
-        mode_label.setEnabled(False)  # Chỉ là label
-        
-        self.mode_browser_action = QAction("    🌐 Mở bằng Trình duyệt", self, checkable=True)
-        self.mode_browser_action.setChecked(self.open_mode == "browser")
-        self.mode_browser_action.triggered.connect(lambda: self.set_open_mode("browser"))
-        settings_menu.addAction(self.mode_browser_action)
-        
-        self.mode_app_action = QAction("    💻 Mở bằng App Zoom Desktop", self, checkable=True)
-        self.mode_app_action.setChecked(self.open_mode == "app")
-        self.mode_app_action.triggered.connect(lambda: self.set_open_mode("app"))
-        settings_menu.addAction(self.mode_app_action)
+        general_settings_action = settings_menu.addAction("⚙️ Cài đặt chung cho tất cả lịch...")
+        general_settings_action.triggered.connect(self.open_general_settings_dialog)
         
         # --- Menu 2: Trợ giúp ---
         help_menu = menu_bar.addMenu("❓ Trợ giúp")
+
+        standard_setup_action = help_menu.addAction("🚀 Thiết lập để vào thẳng không hỏi lại")
+        standard_setup_action.triggered.connect(self.show_standard_setup_guide)
+
+        sleep_check_action = help_menu.addAction("🔋 Kiểm tra Sleep Mode")
+        sleep_check_action.triggered.connect(lambda: self.check_sleep_mode_warning(manual=True))
         
         help_action = help_menu.addAction("📚 Hướng dẫn sử dụng")
         help_action.triggered.connect(self.show_help)
@@ -3028,22 +3575,7 @@ class ZoomAutoApp(QMainWindow):
         
         header_layout.addLayout(title_col, 1)
         
-        # Cột phải: Mode indicator badge
-        right_col = QVBoxLayout()
-        right_col.setSpacing(6)
-        right_col.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        # Mode indicator — Clickable badge
-        self.mode_badge = QPushButton()
-        self.mode_badge.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mode_badge.setFixedHeight(28)
-        self.mode_badge.setToolTip("Nhấn để chuyển đổi cách mở Zoom")
-        self.mode_badge.clicked.connect(self.toggle_open_mode)
-        self._update_mode_badge()
-
-        right_col.addWidget(self.mode_badge, alignment=Qt.AlignmentFlag.AlignRight)
-        
-        header_layout.addLayout(right_col)
+        header_layout.addStretch()
         
         top_level_layout.addWidget(header_widget)
 
@@ -3166,6 +3698,17 @@ class ZoomAutoApp(QMainWindow):
     def quit_app(self):
         """Đóng hẳn ứng dụng (qua menu khay)."""
         self.exit_requested = True
+        self.close()
+
+    def mark_update_restart_mode(self, enabled: bool):
+        """Bật/tắt chế độ thoát do cập nhật để bỏ qua popup xác nhận đóng."""
+        self.update_restart_in_progress = bool(enabled)
+        if enabled:
+            self.exit_requested = True
+
+    def request_quit_for_update(self):
+        """Thoát ứng dụng ngay để tiến trình cập nhật có thể thay thế file."""
+        self.mark_update_restart_mode(True)
         self.close()
 
     def prompt_close_action(self):
@@ -3328,6 +3871,7 @@ class ZoomAutoApp(QMainWindow):
     
     def add_schedule(self):
         """Thêm lịch mới"""
+        had_jobs_before = bool(self.scheduler.get_all_jobs())
         dialog = ScheduleDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
@@ -3371,13 +3915,13 @@ class ZoomAutoApp(QMainWindow):
                 data['name'], # Thêm tên lịch
                 recurrence=data['recurrence'],
                 zoom_link=data['zoom_link'],
-                join_profile=data.get('join_profile'),
-                retry_policy=data.get('retry_policy'),
             )
             if new_job_id:
                 self.save_schedules() # Lưu ngay
                 self.refresh_table()
                 self.find_and_select_row(new_job_id) # CHỌN lịch vừa thêm
+                if not had_jobs_before:
+                    QTimer.singleShot(250, self.maybe_prompt_standard_setup_guide)
     
     def test_zoom(self):
         """Test mở Zoom"""
@@ -3400,72 +3944,203 @@ class ZoomAutoApp(QMainWindow):
         dialog = HelpDialog(self)
         dialog.exec()
 
+    def show_standard_setup_guide(self):
+        """Hiển thị hướng dẫn cấu hình vào thẳng Zoom."""
+        dialog = StandardSetupGuideDialog(self)
+        dialog.exec()
+
     def check_updates(self):
         try:
             updater.check_and_update_ui(self)
         except Exception as e:
             QMessageBox.warning(self, "Cập nhật", f"Lỗi kiểm tra cập nhật: {e}")
 
-    def set_open_mode(self, mode):
-        """Đổi chế độ mở Zoom (browser / app)"""
-        self.open_mode = mode
-        
-        # Cập nhật check state menu
-        self.mode_browser_action.setChecked(mode == "browser")
-        self.mode_app_action.setChecked(mode == "app")
-        
-        # Cập nhật badge trên header
-        self._update_mode_badge()
-        
+    def open_general_settings_dialog(self):
+        """Mo dialog cai dat chung cho tat ca lich."""
+        dialog = GeneralZoomSettingsDialog(
+            join_profile=self.general_join_profile,
+            retry_policy=self.general_retry_policy,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        data = dialog.get_data()
+        self.general_join_profile = normalize_join_profile(data.get("join_profile"))
+        self.general_retry_policy = normalize_retry_policy(data.get("retry_policy"))
+        self.scheduler.set_general_settings(self.general_join_profile, self.general_retry_policy)
+        self._update_general_settings_badge()
         self.save_settings()
-        
-        mode_label = "🌐 Trình duyệt" if mode == "browser" else "💻 App Zoom Desktop"
-        self.show_message(f"✓ Chế độ mở Zoom: {mode_label}")
+        self.refresh_details()
+        self.show_message("✓ Đã lưu cài đặt chung cho tất cả lịch")
 
-    def toggle_open_mode(self):
-        """Chuyển đổi nhanh giữa browser và app"""
-        new_mode = "app" if self.open_mode == "browser" else "browser"
-        self.set_open_mode(new_mode)
+    def _update_general_settings_badge(self):
+        """Cap nhat badge tom tat cai dat chung."""
+        return
 
-    def _update_mode_badge(self):
-        """Cập nhật giao diện badge hiển thị trên header"""
-        if self.open_mode == "app":
-            self.mode_badge.setText("💻 App Zoom")
-            self.mode_badge.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255,255,255,0.25);
-                    color: white;
-                    border: 1px solid rgba(255,255,255,0.5);
-                    border-radius: 14px;
-                    font-size: 11px;
-                    font-weight: bold;
-                    padding: 2px 14px;
-                }
-                QPushButton:hover {
-                    background: rgba(255,255,255,0.4);
-                }
-            """)
+    def get_sleep_mode_status(self):
+        """Kiem tra nguy co may vao sleep tren Windows."""
+        if platform.system().lower() != "windows":
+            return {
+                "supported": False,
+                "has_risk": False,
+                "summary": "Tính năng kiểm tra Sleep Mode hiện chỉ hỗ trợ Windows.",
+                "details": [],
+            }
+
+        try:
+            availability = subprocess.run(
+                ["powercfg", "/a"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            sleep_query = subprocess.run(
+                ["powercfg", "/query", "SCHEME_CURRENT", "SUB_SLEEP"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            button_query = subprocess.run(
+                ["powercfg", "/qh", "SCHEME_CURRENT", "SUB_BUTTONS"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:
+            return {
+                "supported": True,
+                "has_risk": False,
+                "summary": f"Không thể kiểm tra Sleep Mode tự động: {e}",
+                "details": [],
+            }
+
+        availability_text = f"{availability.stdout}\n{availability.stderr}"
+        sleep_text = f"{sleep_query.stdout}\n{sleep_query.stderr}"
+        button_text = f"{button_query.stdout}\n{button_query.stderr}"
+
+        has_standby_support = "Standby (" in availability_text and "available on this system" in availability_text
+        ac_seconds = parse_powercfg_hex_seconds(sleep_text, "Current AC Power Setting Index")
+        dc_seconds = parse_powercfg_hex_seconds(sleep_text, "Current DC Power Setting Index")
+        action_names = {
+            0: "Do nothing",
+            1: "Sleep",
+            2: "Hibernate",
+            3: "Shut down",
+            4: "Turn off the display",
+        }
+        risky_actions = {1, 2, 3}
+
+        details = []
+        has_risk = False
+
+        if has_standby_support:
+            if ac_seconds is not None and ac_seconds > 0:
+                has_risk = True
+                details.append(f"Khi cắm sạc, máy đang được phép sleep sau khoảng {ac_seconds // 60} phút.")
+            if dc_seconds is not None and dc_seconds > 0:
+                has_risk = True
+                details.append(f"Khi dùng pin, máy đang được phép sleep sau khoảng {dc_seconds // 60} phút.")
+            if not details:
+                details.append("Sleep timeout hiện đang để 0 giây (Never) cho các trạng thái đã đọc được.")
+                details.append("Tuy vậy nếu bạn gập nắp máy hoặc bấm nút nguồn, máy vẫn có thể đi vào sleep.")
         else:
-            self.mode_badge.setText("🌐 Trình duyệt")
-            self.mode_badge.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255,255,255,0.25);
-                    color: white;
-                    border: 1px solid rgba(255,255,255,0.5);
-                    border-radius: 14px;
-                    font-size: 11px;
-                    font-weight: bold;
-                    padding: 2px 14px;
-                }
-                QPushButton:hover {
-                    background: rgba(255,255,255,0.4);
-                }
-            """)
+            details.append("Windows không báo trạng thái standby khả dụng qua powercfg /a.")
+
+        lid_ac = parse_powercfg_action_index(button_text, "LIDACTION", "AC")
+        lid_dc = parse_powercfg_action_index(button_text, "LIDACTION", "DC")
+        pbtn_ac = parse_powercfg_action_index(button_text, "PBUTTONACTION", "AC")
+        pbtn_dc = parse_powercfg_action_index(button_text, "PBUTTONACTION", "DC")
+        if lid_ac in risky_actions:
+            has_risk = True
+            details.append(f"Khi cắm sạc, gập nắp máy đang đặt là {action_names.get(lid_ac, str(lid_ac))}.")
+        if lid_dc in risky_actions:
+            has_risk = True
+            details.append(f"Khi dùng pin, gập nắp máy đang đặt là {action_names.get(lid_dc, str(lid_dc))}.")
+        if pbtn_ac in risky_actions:
+            has_risk = True
+            details.append(f"Khi cắm sạc, nút nguồn đang đặt là {action_names.get(pbtn_ac, str(pbtn_ac))}.")
+        if pbtn_dc in risky_actions:
+            has_risk = True
+            details.append(f"Khi dùng pin, nút nguồn đang đặt là {action_names.get(pbtn_dc, str(pbtn_dc))}.")
+
+        summary = (
+            "Nếu máy đi vào Sleep thì ứng dụng sẽ không hoạt động bình thường và có thể lỡ lịch Zoom."
+            if has_risk else
+            "Không thấy sleep timeout tự động trong power plan hiện tại."
+        )
+
+        return {
+            "supported": True,
+            "has_risk": has_risk,
+            "summary": summary,
+            "details": details,
+            "ac_seconds": ac_seconds,
+            "dc_seconds": dc_seconds,
+        }
+
+    def check_sleep_mode_warning(self, manual=False):
+        """Canh bao neu may co nguy co vao sleep khi dang cho lich."""
+        status = self.get_sleep_mode_status()
+        if not status.get("supported", True):
+            if manual:
+                dialog = SleepModeStatusDialog(status, self, manual=True)
+                dialog.exec()
+            return
+
+        if status.get("has_risk"):
+            dialog = SleepModeStatusDialog(status, self, manual=manual)
+            dialog.exec()
+            self.show_message("⚠ Nếu máy vào Sleep, ứng dụng có thể không mở Zoom đúng giờ")
+            return
+
+        if manual:
+            dialog = SleepModeStatusDialog(status, self, manual=True)
+            dialog.exec()
+
+    def maybe_prompt_standard_setup_guide(self):
+        """Hoi nguoi dung co muon xem quy trinh chuan sau khi tao lich dau tien."""
+        if self.standard_guide_prompt_shown or self.standard_guide_prompt_opt_out:
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Thiết lập để vào thẳng Zoom")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText("Bạn đã tạo lịch Zoom đầu tiên thành công.")
+        msg.setInformativeText(
+            "Muốn đến giờ là Zoom vào thẳng phòng mà không bị hỏi thêm, "
+            "bạn nên xem quy trình cấu hình chuẩn ngay bây giờ."
+        )
+
+        view_now_btn = msg.addButton("Xem ngay", QMessageBox.ButtonRole.AcceptRole)
+        later_btn = msg.addButton("Để sau", QMessageBox.ButtonRole.RejectRole)
+        never_btn = msg.addButton("Không nhắc lại", QMessageBox.ButtonRole.DestructiveRole)
+        msg.setDefaultButton(view_now_btn)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        self.standard_guide_prompt_shown = True
+        if clicked == never_btn:
+            self.standard_guide_prompt_opt_out = True
+        self.save_settings()
+
+        if clicked == view_now_btn:
+            self.show_standard_setup_guide()
 
     def save_settings(self):
         """Lưu cài đặt ra file JSON"""
         try:
-            settings = {"open_mode": self.open_mode}
+            settings = {
+                "join_profile": normalize_join_profile(self.general_join_profile),
+                "retry_policy": normalize_retry_policy(self.general_retry_policy),
+                "onboarding": {
+                    "standard_guide_prompt_shown": bool(self.standard_guide_prompt_shown),
+                    "standard_guide_prompt_opt_out": bool(self.standard_guide_prompt_opt_out),
+                }
+            }
             with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
         except Exception as e:
@@ -3478,7 +4153,14 @@ class ZoomAutoApp(QMainWindow):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
-                self.open_mode = settings.get("open_mode", "browser")
+                legacy_open_mode = settings.get("open_mode")
+                if legacy_open_mode in ("app", "browser"):
+                    self.general_join_profile = normalize_join_profile({"mode_priority": [legacy_open_mode, "raw"]})
+                self.general_join_profile = normalize_join_profile(settings.get("join_profile", self.general_join_profile))
+                self.general_retry_policy = normalize_retry_policy(settings.get("retry_policy", self.general_retry_policy))
+                onboarding = settings.get("onboarding", {}) or {}
+                self.standard_guide_prompt_shown = bool(onboarding.get("standard_guide_prompt_shown", False))
+                self.standard_guide_prompt_opt_out = bool(onboarding.get("standard_guide_prompt_opt_out", False))
         except Exception as e:
             print(f"[ERROR] Lỗi tải settings: {e}")
 
@@ -3580,7 +4262,7 @@ class ZoomAutoApp(QMainWindow):
         self.detail_join_profile = QLabel()
         self.detail_join_profile.setObjectName("detailValue")
         self.detail_join_profile.setWordWrap(True)
-        form_layout.addRow(QLabel("Join profile:", objectName="detailLabel"), self.detail_join_profile)
+        form_layout.addRow(QLabel("Cài đặt chung:", objectName="detailLabel"), self.detail_join_profile)
 
         self.detail_last_run = QLabel()
         self.detail_last_run.setObjectName("detailValue")
@@ -3708,12 +4390,9 @@ class ZoomAutoApp(QMainWindow):
 
         self.detail_recurrence.setText(display_str)
 
-        join_profile = job_data.get("join_profile") or DEFAULT_JOIN_PROFILE
-        retry_policy = job_data.get("retry_policy") or DEFAULT_RETRY_POLICY
-        modes = " -> ".join([m.upper() for m in join_profile.get("mode_priority", DEFAULT_JOIN_PROFILE["mode_priority"])])
-        retry_text = f"Retry {retry_policy.get('max_attempts', 1)} lần, trễ {retry_policy.get('delay_seconds', 0)}s"
-        fallback_text = "Fallback bật" if retry_policy.get("fallback_enabled", True) else "Fallback tắt"
-        self.detail_join_profile.setText(f"{modes}\n{retry_text} • {fallback_text}")
+        self.detail_join_profile.setText(
+            format_join_profile_text(self.general_join_profile, self.general_retry_policy)
+        )
 
         last_meta = job_data.get("last_run_meta") or {}
         if not last_meta:
@@ -3734,6 +4413,14 @@ class ZoomAutoApp(QMainWindow):
                 code = last_meta.get("last_error_code", "UNKNOWN_ERROR")
                 msg = last_meta.get("last_error_message", "Không có chi tiết")
                 self.detail_last_run.setText(f"Thất bại lúc {time_text}\n{code}: {msg}")
+
+    def refresh_details(self):
+        """Cap nhat lai khung chi tiet cho lich dang duoc chon."""
+        if not self.current_selected_job_id:
+            return
+        job_data = self.scheduler.get_all_jobs().get(self.current_selected_job_id)
+        if job_data:
+            self.update_detail_pane(job_data)
 
     def join_selected_schedule(self):
         """Mở phòng Zoom của lịch đang chọn ngay lập tức"""
@@ -3816,8 +4503,6 @@ class ZoomAutoApp(QMainWindow):
                 new_data['name'],
                 recurrence=new_data['recurrence'],
                 zoom_link=new_data['zoom_link'],
-                join_profile=new_data.get('join_profile'),
-                retry_policy=new_data.get('retry_policy'),
                 last_run_meta=job_data.get('last_run_meta'),
             )
             self.save_schedules()
@@ -3862,8 +4547,6 @@ class ZoomAutoApp(QMainWindow):
             new_name,
             recurrence=job_data.get('recurrence'),
             zoom_link=job_data.get('zoom_link'),
-            join_profile=job_data.get('join_profile'),
-            retry_policy=job_data.get('retry_policy'),
         )
         if new_job_id:
             self.save_schedules()
@@ -4390,7 +5073,7 @@ class ZoomAutoApp(QMainWindow):
         
     def closeEvent(self, event):
         """Đóng cửa sổ: hỏi người dùng Ẩn xuống khay hoặc Đóng hẳn."""
-        if not self.exit_requested:
+        if not self.exit_requested and not self.update_restart_in_progress:
             choice = self.prompt_close_action()
             if choice == "hide":
                 event.ignore()

@@ -1,8 +1,8 @@
 ; Inno Setup Script for Zoom Auto Scheduler
-; Generated for version 1.1.5
+; Generated for version 1.2.0
 
 #define MyAppName "Zoom Auto Scheduler"
-#define MyAppVersion "1.1.5"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "ZoomAuto"
 #define MyAppURL "https://github.com/tronghv77/zoom-auto"
 #define MyAppExeName "ZoomAuto.exe"
