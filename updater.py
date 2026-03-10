@@ -222,6 +222,40 @@ def _write_apply_batch(current_exe: Path, new_exe: Path) -> Path:
     return bat
 
 
+def _write_installer_apply_batch(current_exe: Path, installer_exe: Path) -> Path:
+    """Create a temp .bat that waits for app exit, runs installer, then restarts the app."""
+    bat = Path(tempfile.gettempdir()) / f"apply_installer_update_{int(time.time())}.bat"
+    pid = os.getpid()
+    content = (
+        "@echo off\r\n"
+        "setlocal enableextensions\r\n"
+        f"set CURR=\"{str(current_exe)}\"\r\n"
+        f"set INSTALLER=\"{str(installer_exe)}\"\r\n"
+        f"set PID={pid}\r\n"
+        "set /a WAIT=0\r\n"
+        "\r\n"
+        ":waitloop\r\n"
+        "ping -n 2 127.0.0.1 >nul\r\n"
+        "set /a WAIT+=1\r\n"
+        "if %WAIT% GEQ 60 goto runinstaller\r\n"
+        f"tasklist /fi \"PID eq {pid}\" /fo csv 2>nul | find \",\\\"{pid}\\\"\" >nul\r\n"
+        "if %ERRORLEVEL%==0 goto waitloop\r\n"
+        "\r\n"
+        ":runinstaller\r\n"
+        "start \"\" /wait %INSTALLER% /VERYSILENT /NORESTART /CLOSEAPPLICATIONS /SP-\r\n"
+        "if %ERRORLEVEL% NEQ 0 goto cleanup\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
+        "if exist %CURR% start \"\" %CURR%\r\n"
+        "\r\n"
+        ":cleanup\r\n"
+        "del /q %INSTALLER% >nul 2>&1\r\n"
+        "(goto) 2>nul & del /q \"%~f0\"\r\n"
+    )
+    with open(bat, "w", encoding="utf-8") as f:
+        f.write(content)
+    return bat
+
+
 def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
     if not getattr(sys, "frozen", False):
         return False, "Chỉ hỗ trợ tự cập nhật cho bản đóng gói (.exe)."
@@ -229,12 +263,9 @@ def apply_update(downloaded_file: Path) -> Tuple[bool, Optional[str]]:
     # Installer path: run Inno Setup silently, no window, no restart prompt
     if downloaded_file.suffix.lower() == ".exe":
         try:
-            _hidden_popen([
-                str(downloaded_file),
-                "/VERYSILENT",
-                "/NORESTART",
-                "/CLOSEAPPLICATIONS",
-            ])
+            current_exe = Path(sys.executable)
+            bat = _write_installer_apply_batch(current_exe, downloaded_file)
+            _hidden_popen(["cmd.exe", "/c", str(bat)])
             return True, None
         except Exception as e:
             return False, str(e)
@@ -324,8 +355,19 @@ def check_and_update_ui(parent) -> None:
                 pass
             return
 
+    if hasattr(parent, "mark_update_restart_mode"):
+        try:
+            parent.mark_update_restart_mode(True)
+        except Exception:
+            pass
+
     ok, err = apply_update(tmp_file)
     if not ok:
+        if hasattr(parent, "mark_update_restart_mode"):
+            try:
+                parent.mark_update_restart_mode(False)
+            except Exception:
+                pass
         QMessageBox.critical(parent, "Cập nhật", f"Không thể áp dụng cập nhật: {err}")
         try:
             tmp_file.unlink(missing_ok=True)
@@ -335,6 +377,12 @@ def check_and_update_ui(parent) -> None:
 
     # Close app to allow batch to replace and restart
     QMessageBox.information(parent, "Cập nhật", "Ứng dụng sẽ khởi động lại để hoàn tất cập nhật.")
+    if hasattr(parent, "request_quit_for_update"):
+        try:
+            parent.request_quit_for_update()
+            return
+        except Exception:
+            pass
     os._exit(0)
 
 
